@@ -102,12 +102,14 @@ pub struct AsepriteLoader;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AsepriteLoaderSettings {
     pub sampler: ImageSampler,
+    pub visible_layers: Option<Vec<String>>,
 }
 
 impl Default for AsepriteLoaderSettings {
     fn default() -> Self {
         Self {
             sampler: ImageSampler::nearest(),
+            visible_layers: None,
         }
     }
 }

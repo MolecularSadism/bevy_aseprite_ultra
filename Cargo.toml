@@ -34,6 +34,7 @@ bevy = { version = "0.18", features = [
   "multi_threaded",
   "bevy_window",
 ] }
+aseprite-loader = { path = "aseprite-loader" }
 
 [features]
 asset_processing = [
