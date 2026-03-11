@@ -28,16 +28,16 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn((
         AseAnimation::sprite(
             Animation::default(),
-            server.load("layers.aseprite#Layer 1"),
+            server.load("animated_layers.aseprite#Layer 1"),
         ),
         Transform::from_translation(Vec3::new(-22., 0., 0.)),
     ));
 
-    // All visible layers composed into one sprite (default)
+    // All visible layers composed into one animated sprite (default)
     cmd.spawn((
         AseAnimation {
             animation: Animation::default(),
-            aseprite: server.load("layers.aseprite"),
+            aseprite: server.load("animated_layers.aseprite"),
         },
         Sprite::default(),
         Transform::from_translation(Vec3::new(-10., 0., 0.)),
@@ -49,7 +49,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn((
         AseLayeredAnimation {
             animation: Animation::default(),
-            aseprite: server.load("layers.aseprite"),
+            aseprite: server.load("animated_layers.aseprite"),
             layers: LayerFilter::Include(vec![LayerId::new("Layer 1")]),
             render_target: RenderTarget::Sprite,
         },
@@ -61,7 +61,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn((
         AseLayeredAnimation {
             animation: Animation::default(),
-            aseprite: server.load("layers.aseprite"),
+            aseprite: server.load("animated_layers.aseprite"),
             layers: LayerFilter::Include(vec![
                 LayerId::new("Layer 1"),
                 LayerId::new("Layer 2"),
@@ -79,7 +79,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn((
         AseLayeredAnimation {
             animation: Animation::default(),
-            aseprite: server.load("layers.aseprite"),
+            aseprite: server.load("animated_layers.aseprite"),
             layers: LayerFilter::Visible,
             render_target: RenderTarget::Sprite,
         },
@@ -97,7 +97,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
         ..default()
     })
     .with_children(|root| {
-        // Row of group boxes
+        // Row of group labels
         root.spawn(Node {
             flex_direction: FlexDirection::Row,
             justify_content: JustifyContent::Center,

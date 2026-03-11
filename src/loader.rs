@@ -15,6 +15,9 @@ use bevy::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Registers the [`Aseprite`] asset type and its loader.
+///
+/// Added automatically by [`AsepriteUltraPlugin`](crate::AsepriteUltraPlugin).
 pub struct AsepriteLoaderPlugin;
 impl Plugin for AsepriteLoaderPlugin {
     fn build(&self, app: &mut App) {
@@ -62,6 +65,7 @@ impl Aseprite {
     }
 }
 
+/// Metadata for a single animation tag in the aseprite file.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "asset_processing", derive(Serialize, Deserialize))]
 pub struct TagMeta {
@@ -82,6 +86,7 @@ enum AnimationDirectionDef {
     Unknown(u8),
 }
 
+/// Metadata for a single key in a slice's animation timeline.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "asset_processing", derive(Serialize, Deserialize))]
 pub struct SliceKeyMeta {
@@ -91,6 +96,10 @@ pub struct SliceKeyMeta {
     pub nine_patch: Option<Vec4>,
 }
 
+/// Metadata for a named slice region in the aseprite file.
+///
+/// Contains the slice rectangle, its position in the atlas, optional
+/// pivot offset, and optional 9-patch insets for UI scaling.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "asset_processing", derive(Serialize, Deserialize))]
 pub struct SliceMeta {
@@ -114,12 +123,22 @@ impl From<&SliceMeta> for Anchor {
     }
 }
 
+/// The [`AssetLoader`] for `.aseprite` / `.ase` files.
+///
+/// Registered automatically by [`AsepriteLoaderPlugin`].
 #[derive(Default, TypePath)]
 pub struct AsepriteLoader;
 
+/// Settings for the aseprite asset loader.
+///
+/// Configure the image sampler and optionally restrict which layers are
+/// included in the default (unlabeled) composite.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AsepriteLoaderSettings {
+    /// The texture sampler to use. Defaults to nearest-neighbor.
     pub sampler: ImageSampler,
+    /// When set, only these layers are composited for the default asset.
+    /// `None` means all visible layers (the default).
     pub visible_layers: Option<Vec<String>>,
 }
 
@@ -255,62 +274,115 @@ impl AssetLoader for AsepriteLoader {
         let composite_indicies = resolve_indices(&composite_ids);
         let all_indicies = resolve_indices(&all_composite_ids);
 
-        // ----------------------------- slices
-        let mut slices = HashMap::new();
-        raw.slices().iter().for_each(|slice| {
-            let slice_key = slice.slice_keys.first().unwrap();
+        // Pre-resolve per-layer indices while source is still available
+        let per_layer_resolved: Vec<(LayerId, Vec<usize>)> = per_layer_ids
+            .iter()
+            .map(|(id, ids)| (*id, resolve_indices(ids)))
+            .collect();
 
-            let min = Vec2::new(slice_key.x as f32, slice_key.y as f32);
-            let max = min + Vec2::new(slice_key.width as f32, slice_key.height as f32);
+        // ----------------------------- raw slice data
+        // Collect slice metadata without atlas IDs; each variant (composite,
+        // all, per-layer) computes its own atlas IDs relative to its frame
+        // position in the packed atlas.
+        struct RawSlice {
+            name: String,
+            rect: Rect,
+            canvas_min: UVec2,
+            canvas_max: UVec2,
+            pivot: Option<Vec2>,
+            nine_patch: Option<Vec4>,
+            keys: Vec<SliceKeyMeta>,
+        }
 
-            let pivot = match slice_key.pivot {
-                Some(pivot) => Some(Vec2::new(pivot.x as f32, pivot.y as f32)),
-                None => None,
-            };
+        let raw_slice_data: Vec<RawSlice> = raw
+            .slices()
+            .iter()
+            .map(|slice| {
+                let slice_key = slice.slice_keys.first().unwrap();
+                let min = Vec2::new(slice_key.x as f32, slice_key.y as f32);
+                let max = min + Vec2::new(slice_key.width as f32, slice_key.height as f32);
 
-            let nine_patch = match slice_key.nine_patch {
-                Some(nine_patch) => Some(Vec4::new(
-                    nine_patch.x as f32,
-                    nine_patch.y as f32,
-                    nine_patch.width as f32,
-                    nine_patch.height as f32,
-                )),
-                None => None,
-            };
-
-            let layout_id =
-                layout.add_texture(URect::from_corners(min.as_uvec2(), max.as_uvec2()));
-
-            let mut keys = Vec::new();
-            for key in &slice.slice_keys {
-                let k_min = Vec2::new(key.x as f32, key.y as f32);
-                let k_max = k_min + Vec2::new(key.width as f32, key.height as f32);
-
-                let k_pivot = key.pivot.map(|p| Vec2::new(p.x as f32, p.y as f32));
-
-                let k_nine_patch = key.nine_patch.map(|np| {
+                let pivot = slice_key
+                    .pivot
+                    .map(|p| Vec2::new(p.x as f32, p.y as f32));
+                let nine_patch = slice_key.nine_patch.map(|np| {
                     Vec4::new(np.x as f32, np.y as f32, np.width as f32, np.height as f32)
                 });
 
-                keys.push(SliceKeyMeta {
-                    frame: key.frame_number as usize,
-                    rect: Rect::from_corners(k_min, k_max),
-                    pivot: k_pivot,
-                    nine_patch: k_nine_patch,
-                });
-            }
+                let keys: Vec<SliceKeyMeta> = slice
+                    .slice_keys
+                    .iter()
+                    .map(|key| {
+                        let k_min = Vec2::new(key.x as f32, key.y as f32);
+                        let k_max =
+                            k_min + Vec2::new(key.width as f32, key.height as f32);
+                        SliceKeyMeta {
+                            frame: key.frame_number as usize,
+                            rect: Rect::from_corners(k_min, k_max),
+                            pivot: key
+                                .pivot
+                                .map(|p| Vec2::new(p.x as f32, p.y as f32)),
+                            nine_patch: key.nine_patch.map(|np| {
+                                Vec4::new(
+                                    np.x as f32,
+                                    np.y as f32,
+                                    np.width as f32,
+                                    np.height as f32,
+                                )
+                            }),
+                        }
+                    })
+                    .collect();
 
-            slices.insert(
-                slice.name.into(),
-                SliceMeta {
+                RawSlice {
+                    name: slice.name.to_owned(),
                     rect: Rect::from_corners(min, max),
-                    atlas_id: layout_id,
+                    canvas_min: min.as_uvec2(),
+                    canvas_max: max.as_uvec2(),
                     pivot,
                     nine_patch,
                     keys,
-                },
-            );
-        });
+                }
+            })
+            .collect();
+
+        // Build a SliceMeta map for a specific variant by offsetting canvas-
+        // relative slice rects to the variant's first frame position in the
+        // packed atlas.
+        let build_slices =
+            |frame_index: usize, layout: &mut TextureAtlasLayout| -> HashMap<String, SliceMeta> {
+                let frame_rect = layout.textures[frame_index];
+                raw_slice_data
+                    .iter()
+                    .map(|raw| {
+                        let atlas_rect = URect::from_corners(
+                            frame_rect.min + raw.canvas_min,
+                            frame_rect.min + raw.canvas_max,
+                        );
+                        let layout_id = layout.add_texture(atlas_rect);
+                        (
+                            raw.name.clone(),
+                            SliceMeta {
+                                rect: raw.rect,
+                                atlas_id: layout_id,
+                                pivot: raw.pivot,
+                                nine_patch: raw.nine_patch,
+                                keys: raw.keys.clone(),
+                            },
+                        )
+                    })
+                    .collect()
+            };
+
+        let composite_slices = build_slices(composite_indicies[0], &mut layout);
+        let all_slices = build_slices(all_indicies[0], &mut layout);
+
+        let mut per_layer_data: Vec<(LayerId, Vec<usize>, HashMap<String, SliceMeta>)> =
+            Vec::new();
+        for (layer_id, layer_indicies) in per_layer_resolved {
+            let slices = build_slices(layer_indicies[0], &mut layout);
+            per_layer_data.push((layer_id, layer_indicies, slices));
+        }
 
         // ----------------------------- labeled sub-assets (shared atlas)
         let atlas_layout = load_context.add_labeled_asset("atlas_layout".into(), layout);
@@ -340,7 +412,7 @@ impl AssetLoader for AsepriteLoader {
         load_context.add_labeled_asset(
             "all".into(),
             Aseprite {
-                slices: slices.clone(),
+                slices: all_slices,
                 tags: tags.clone(),
                 frame_durations: frame_durations.clone(),
                 atlas_layout: atlas_layout.clone(),
@@ -353,12 +425,11 @@ impl AssetLoader for AsepriteLoader {
         );
 
         // ----------------------------- per-layer sub-assets
-        for (layer_id, ids) in &per_layer_ids {
-            let layer_indicies = resolve_indices(ids);
+        for (layer_id, layer_indicies, layer_slices) in per_layer_data {
             load_context.add_labeled_asset(
                 layer_id.as_str().into(),
                 Aseprite {
-                    slices: slices.clone(),
+                    slices: layer_slices,
                     tags: tags.clone(),
                     frame_durations: frame_durations.clone(),
                     atlas_layout: atlas_layout.clone(),
@@ -373,7 +444,7 @@ impl AssetLoader for AsepriteLoader {
 
         // ----------------------------- main asset (composite visible)
         Ok(Aseprite {
-            slices,
+            slices: composite_slices,
             tags,
             frame_durations,
             atlas_layout,

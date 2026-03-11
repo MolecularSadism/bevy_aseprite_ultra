@@ -16,10 +16,16 @@ impl Plugin for AsepriteSlicePlugin {
     }
 }
 
-/// Anything component that implements this trait is a render target for [`AseSlice`]
+/// Any component that implements this trait can be used as a render target for
+/// [`AseSlice`]. The plugin ships with implementations for [`Sprite`],
+/// [`ImageNode`], and [`MeshMaterial2d`] (plus [`MeshMaterial3d`] with the `3d`
+/// feature).
+///
+/// Implement this trait on your own material to use slice data in custom shaders.
 ///
 /// # Examples
-/// ```
+///
+/// ```rust,ignore
 /// impl RenderSlice for MyMaterial {
 ///     type Extra<'e> = Res<'e, Time>;
 ///     fn render_slice(
@@ -99,17 +105,24 @@ impl<M: Material + RenderSlice> RenderSlice for MeshMaterial3d<M> {
     }
 }
 
-/// Displays an aseprite atlas slice.
+/// Displays a static sprite from a named aseprite slice.
+///
+/// Slices are regions defined in the aseprite file. They support pivot
+/// offsets and 9-patch data for UI scaling.
 ///
 /// Use the factory methods [`AseSlice::sprite`] and [`AseSlice::ui`]
 /// to spawn with the appropriate render target:
 ///
-/// ```rust
+/// ```rust,no_run
+/// # use bevy::prelude::*;
+/// # use bevy_aseprite_ultra::prelude::*;
+/// # fn example(mut cmd: Commands, server: Res<AssetServer>) {
 /// // Sprite slice (2D world)
-/// cmd.spawn(AseSlice::sprite(server.load("ghost_slices.aseprite"), "ghost_red"));
+/// cmd.spawn(AseSlice::sprite(server.load("icons.aseprite"), "ghost_red"));
 ///
 /// // UI slice
-/// cmd.spawn(AseSlice::ui(server.load("ghost_slices.aseprite"), "ghost_red"));
+/// cmd.spawn(AseSlice::ui(server.load("icons.aseprite"), "ghost_red"));
+/// # }
 /// ```
 #[derive(Component, Reflect, Default, Debug, Clone)]
 #[reflect]

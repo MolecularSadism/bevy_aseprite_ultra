@@ -5,11 +5,14 @@ use bevy::prelude::*;
 use bevy::ui::widget::ImageNode;
 use msg_interned_id::InternedId;
 
-/// Whether layer children render as world sprites or UI nodes.
+/// Controls whether layer children render as world [`Sprite`]s or UI
+/// [`ImageNode`]s.
 #[derive(Clone, Debug, Default)]
 pub enum RenderTarget {
+    /// Render as world sprites (default). Children get [`Sprite`] + [`Transform`].
     #[default]
     Sprite,
+    /// Render as UI nodes. Children get [`ImageNode`] + [`Node`] + [`ZIndex`].
     Ui,
 }
 
@@ -33,12 +36,27 @@ impl Plugin for AsepriteLayersPlugin {
 #[derive(InternedId, Component, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct LayerId(bevy::ecs::intern::Interned<str>);
 
-/// Which layers to spawn as children.
+/// Selects which layers to spawn as children.
+///
+/// ```rust,no_run
+/// # use bevy_aseprite_ultra::prelude::*;
+/// // All layers including hidden ones
+/// let all = LayerFilter::All;
+///
+/// // Only layers marked visible in the aseprite file (default)
+/// let visible = LayerFilter::Visible;
+///
+/// // Only specific named layers
+/// let specific = LayerFilter::Include(vec![
+///     LayerId::new("body"),
+///     LayerId::new("hat"),
+/// ]);
+/// ```
 #[derive(Clone, Debug)]
 pub enum LayerFilter {
     /// All layers including hidden ones.
     All,
-    /// Only layers marked visible in the aseprite file.
+    /// Only layers marked visible in the aseprite file (default).
     Visible,
     /// Only these specific layers.
     Include(Vec<LayerId>),
@@ -60,17 +78,31 @@ pub struct SpriteLayerOf(pub Entity);
 #[relationship_target(relationship = SpriteLayerOf)]
 pub struct SpriteLayers(Vec<Entity>);
 
-/// Spawns a child [`AseAnimation`] per layer. Each child automatically gets a
-/// [`Sprite`] (via [`AseAnimation`]'s required components), [`ChildOf`] (for
-/// transform propagation), [`SpriteLayerOf`], and [`LayerId`].
+/// Spawns a child [`AseAnimation`] per layer for full composition control.
 ///
-/// The parent entity does **not** need a [`Sprite`] — the children handle rendering.
+/// Each child entity gets [`ChildOf`], [`SpriteLayerOf`], [`LayerId`], and
+/// the appropriate render component ([`Sprite`] or [`ImageNode`]).
+/// The parent entity does **not** render — the children handle all rendering.
+///
 /// Toggle layer visibility at runtime via [`Visibility`] on the children.
+/// Mutating this component diffs existing children: only layers that were
+/// added or removed are spawned or despawned.
 ///
-/// Mutating this component at runtime will diff existing children: only
-/// layers that were added/removed are spawned/despawned.
+/// ```rust,no_run
+/// # use bevy::prelude::*;
+/// # use bevy_aseprite_ultra::prelude::*;
+/// # fn example(mut cmd: Commands, server: Res<AssetServer>) {
+/// cmd.spawn(AseLayeredAnimation {
+///     animation: Animation::tag("idle"),
+///     aseprite: server.load("character.aseprite"),
+///     layers: LayerFilter::Visible,
+///     render_target: RenderTarget::Sprite,
+/// });
+/// # }
+/// ```
 #[derive(Component, Clone)]
 #[require(Visibility)]
+#[require(InheritedVisibility)]
 pub struct AseLayeredAnimation {
     pub animation: Animation,
     pub aseprite: Handle<Aseprite>,
@@ -78,15 +110,27 @@ pub struct AseLayeredAnimation {
     pub render_target: RenderTarget,
 }
 
-/// Spawns a child [`AseSlice`] per layer. Each child gets a [`Sprite`],
-/// [`ChildOf`] (for transform propagation), [`SpriteLayerOf`], and [`LayerId`].
+/// Spawns a child [`AseSlice`] per layer for full composition control.
 ///
-/// The parent entity does **not** need a [`Sprite`] — the children handle rendering.
-/// Toggle layer visibility at runtime via [`Visibility`] on the children.
+/// Each child entity gets [`ChildOf`], [`SpriteLayerOf`], [`LayerId`], and
+/// the appropriate render component. Works identically to
+/// [`AseLayeredAnimation`] but for static slices.
 ///
-/// Mutating this component at runtime will diff existing children: only
-/// layers that were added/removed are spawned/despawned.
+/// ```rust,no_run
+/// # use bevy::prelude::*;
+/// # use bevy_aseprite_ultra::prelude::*;
+/// # fn example(mut cmd: Commands, server: Res<AssetServer>) {
+/// cmd.spawn(AseLayeredSlice {
+///     name: "ghost_red".into(),
+///     aseprite: server.load("icons.aseprite"),
+///     layers: LayerFilter::All,
+///     render_target: RenderTarget::Sprite,
+/// });
+/// # }
+/// ```
 #[derive(Component, Clone)]
+#[require(Visibility)]
+#[require(InheritedVisibility)]
 pub struct AseLayeredSlice {
     pub name: String,
     pub aseprite: Handle<Aseprite>,
@@ -258,15 +302,30 @@ fn spawn_animation_children(
             ChildOf(parent),
             SpriteLayerOf(parent),
             *layer_id,
-            Transform::from_translation(Vec3::new(0., 0., z as f32 * 0.001)),
             Name::new(layer_id.as_str().to_owned()),
         );
         match render_target {
             RenderTarget::Sprite => {
-                cmd.spawn((common, ase_animation, Sprite::default()));
+                cmd.spawn((
+                    common,
+                    ase_animation,
+                    Sprite::default(),
+                    Transform::from_translation(Vec3::new(0., 0., z as f32 * 0.001)),
+                ));
             }
             RenderTarget::Ui => {
-                cmd.spawn((common, ase_animation, ImageNode::default(), Node::default()));
+                cmd.spawn((
+                    common,
+                    ase_animation,
+                    ImageNode::default(),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Percent(100.),
+                        height: Val::Percent(100.),
+                        ..default()
+                    },
+                    ZIndex(z as i32),
+                ));
             }
         }
     }
@@ -291,15 +350,30 @@ fn spawn_slice_children(
             ChildOf(parent),
             SpriteLayerOf(parent),
             *layer_id,
-            Transform::from_translation(Vec3::new(0., 0., z as f32 * 0.001)),
             Name::new(layer_id.as_str().to_owned()),
         );
         match render_target {
             RenderTarget::Sprite => {
-                cmd.spawn((common, ase_slice, Sprite::default()));
+                cmd.spawn((
+                    common,
+                    ase_slice,
+                    Sprite::default(),
+                    Transform::from_translation(Vec3::new(0., 0., z as f32 * 0.001)),
+                ));
             }
             RenderTarget::Ui => {
-                cmd.spawn((common, ase_slice, ImageNode::default(), Node::default()));
+                cmd.spawn((
+                    common,
+                    ase_slice,
+                    ImageNode::default(),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Percent(100.),
+                        height: Val::Percent(100.),
+                        ..default()
+                    },
+                    ZIndex(z as i32),
+                ));
             }
         }
     }

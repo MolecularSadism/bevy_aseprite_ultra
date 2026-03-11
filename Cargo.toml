@@ -34,6 +34,8 @@ bevy = { version = "0.18", features = [
   "file_watcher",
   "multi_threaded",
   "bevy_window",
+  "bevy_ui_debug",
+  "bevy_dev_tools",
 ] }
 
 

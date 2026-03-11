@@ -33,17 +33,24 @@ impl Plugin for AsepriteAnimationPlugin {
     }
 }
 
-/// Anything component that implements this trait is a render target for [`AseAnimation`]
+/// Any component that implements this trait can be used as a render target for
+/// [`AseAnimation`]. The plugin ships with implementations for [`Sprite`],
+/// [`ImageNode`], [`MeshMaterial2d`], and [`MaterialNode`] (plus [`MeshMaterial3d`]
+/// with the `3d` feature).
+///
+/// Implement this trait on your own material to drive custom shaders with
+/// aseprite animation data.
 ///
 /// # Examples
-/// ```
+///
+/// ```rust,ignore
 /// impl RenderAnimation for MyMaterial {
 ///     type Extra<'e> = (Res<'e, Time>, Res<'e, Assets<TextureAtlasLayout>>);
 ///     fn render_animation(
 ///         &mut self,
-///        aseprite: &Aseprite,
-///        state: &AnimationState,
-///        extra: &mut Self::Extra<'_>,
+///         aseprite: &Aseprite,
+///         state: &AnimationState,
+///         extra: &mut Self::Extra<'_>,
 ///     ) {
 ///         let Some(atlas_layout) = extra.1.get(&aseprite.atlas_layout) else {
 ///             return;
@@ -135,28 +142,35 @@ impl<M: Material + RenderAnimation> RenderAnimation for MeshMaterial3d<M> {
     }
 }
 
-/// Create a Component using an Aseprite Animation.
-/// Automatically requires [`AnimationState`], so you don't need
-/// to add it manually when spawning.
+/// Renders an aseprite animation on any component that implements [`RenderAnimation`].
+///
+/// Automatically requires [`AnimationState`], [`Visibility`], and
+/// [`InheritedVisibility`] — no need to add them manually.
 ///
 /// Use the factory methods [`AseAnimation::sprite`] and [`AseAnimation::ui`]
 /// to spawn with the appropriate render target:
 ///
-/// ```rust
+/// ```rust,no_run
+/// # use bevy::prelude::*;
+/// # use bevy_aseprite_ultra::prelude::*;
+/// # fn example(mut cmd: Commands, server: Res<AssetServer>) {
 /// // Sprite animation (2D world)
 /// cmd.spawn(AseAnimation::sprite(
-///     server.load("player.aseprite"),
 ///     Animation::tag("walk-right"),
+///     server.load("player.aseprite"),
 /// ));
 ///
 /// // UI animation
 /// cmd.spawn(AseAnimation::ui(
-///     server.load("player.aseprite"),
 ///     Animation::tag("walk-right"),
+///     server.load("player.aseprite"),
 /// ));
+/// # }
 /// ```
 #[derive(Component, Default, Reflect, Clone, Debug)]
 #[require(AnimationState)]
+#[require(Visibility)]
+#[require(InheritedVisibility)]
 #[reflect]
 pub struct AseAnimation {
     pub animation: Animation,
@@ -194,12 +208,27 @@ pub fn render_animation<T: RenderAnimation + Component<Mutability = Mutable>>(
     }
 }
 
-/// Add this tag, if you do not want to plugin to handle
-/// anitmation ticks. Instead you can directly control the
-/// `AnimationState` component
+/// Marker component that disables automatic animation ticking.
+///
+/// When present, the plugin will not advance frames automatically.
+/// Use [`NextFrameEvent`] to manually advance frames, or modify
+/// [`AnimationState`] directly.
 #[derive(Component)]
 pub struct ManualTick;
 
+/// Configuration for an aseprite animation.
+///
+/// Use the builder methods to configure tag, speed, repeat, direction,
+/// and animation chaining:
+///
+/// ```rust,no_run
+/// # use bevy_aseprite_ultra::prelude::*;
+/// let anim = Animation::tag("walk-right")
+///     .with_speed(1.5)
+///     .with_repeat(AnimationRepeat::Count(3))
+///     .with_direction(AnimationDirection::PingPong)
+///     .with_then("idle", AnimationRepeat::Loop);
+/// ```
 #[derive(Debug, Clone, Reflect)]
 #[reflect]
 pub struct Animation {
@@ -349,11 +378,16 @@ impl From<&str> for Animation {
     }
 }
 
+/// Tracks the current frame and elapsed time of an animation.
+///
+/// Automatically added to entities with [`AseAnimation`] via required components.
+/// You can read this to query the current animation frame, or write to it
+/// when using [`ManualTick`] for manual frame control.
 #[derive(Component, Debug, Default, Reflect)]
 #[reflect]
 pub struct AnimationState {
-    /// carefull, changing the frame out of bounds
-    /// may result in panic.
+    /// The frame index relative to the current tag's start. Changing this
+    /// out of bounds may cause a panic.
     pub relative_frame: u16,
     pub current_frame: u16,
     pub elapsed: std::time::Duration,
@@ -370,6 +404,7 @@ impl AnimationState {
     }
 }
 
+/// The current playback direction within a ping-pong animation.
 #[derive(Default, Debug, Reflect)]
 #[reflect]
 pub enum PlayDirection {
@@ -378,6 +413,9 @@ pub enum PlayDirection {
     Backward,
 }
 
+/// Events emitted by the animation system.
+///
+/// Use `EventReader<AnimationEvents>` to react to animation completions.
 #[derive(Message, Debug, Reflect)]
 #[reflect]
 pub enum AnimationEvents {
@@ -385,6 +423,8 @@ pub enum AnimationEvents {
     LoopCycleFinished(Entity),
 }
 
+/// Playback direction for an animation. Overrides the direction set in
+/// the aseprite file when provided via [`Animation::with_direction`].
 #[derive(Default, Clone, Reflect, Debug)]
 #[reflect]
 pub enum AnimationDirection {
@@ -407,6 +447,7 @@ impl From<RawDirection> for AnimationDirection {
     }
 }
 
+/// How many times an animation should repeat.
 #[derive(Default, Debug, Clone, Reflect)]
 #[reflect]
 pub enum AnimationRepeat {
@@ -503,6 +544,9 @@ pub fn update_aseprite_animation(
     Ok(())
 }
 
+/// Trigger this event to manually advance an animation by one frame.
+///
+/// Used together with [`ManualTick`] for frame-by-frame control.
 #[derive(Event)]
 pub struct NextFrameEvent(pub Entity);
 
