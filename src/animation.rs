@@ -136,12 +136,49 @@ impl<M: Material + RenderAnimation> RenderAnimation for MeshMaterial3d<M> {
 }
 
 /// Create a Component using an Aseprite Animation.
+/// Automatically requires [`AnimationState`], so you don't need
+/// to add it manually when spawning.
+///
+/// Use the factory methods [`AseAnimation::sprite`] and [`AseAnimation::ui`]
+/// to spawn with the appropriate render target:
+///
+/// ```rust
+/// // Sprite animation (2D world)
+/// cmd.spawn(AseAnimation::sprite(
+///     server.load("player.aseprite"),
+///     Animation::tag("walk-right"),
+/// ));
+///
+/// // UI animation
+/// cmd.spawn(AseAnimation::ui(
+///     server.load("player.aseprite"),
+///     Animation::tag("walk-right"),
+/// ));
+/// ```
 #[derive(Component, Default, Reflect, Clone, Debug)]
 #[require(AnimationState)]
 #[reflect]
 pub struct AseAnimation {
     pub animation: Animation,
     pub aseprite: Handle<Aseprite>,
+}
+
+impl AseAnimation {
+    /// Create a new `AseAnimation` with a [`Sprite`] render target.
+    pub fn sprite(
+        animation: Animation,
+        aseprite: Handle<Aseprite>,
+    ) -> (AseAnimation, Sprite) {
+        (AseAnimation { animation, aseprite }, Sprite::default())
+    }
+
+    /// Create a new `AseAnimation` with an [`ImageNode`] render target (for UI).
+    pub fn ui(
+        animation: Animation,
+        aseprite: Handle<Aseprite>,
+    ) -> (AseAnimation, ImageNode, Node) {
+        (AseAnimation { animation, aseprite }, ImageNode::default(), Node::default(),)
+    }
 }
 
 pub fn render_animation<T: RenderAnimation + Component<Mutability = Mutable>>(

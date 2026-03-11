@@ -1,5 +1,9 @@
 use crate::error::AsepriteError;
-use aseprite_loader::{binary::chunks::tags::AnimationDirection, loader::{AsepriteFile, LayerSelection}};
+use crate::layers::LayerId;
+use aseprite_loader::{
+    binary::chunks::tags::AnimationDirection,
+    loader::{AsepriteFile, LayerSelection},
+};
 use bevy::{
     asset::{io::Reader, AssetLoader, RenderAssetUsages},
     image::ImageSampler,
@@ -19,10 +23,15 @@ impl Plugin for AsepriteLoaderPlugin {
     }
 }
 
-//@todo: if this can be serialized, we basicly have a intermediate binary
-//represantion and can make use of the asset prepocessor. No longer need
-//to ship or bundle aseprite binaries into your release.
-#[derive(Asset, Default, TypePath, Debug)]
+/// The loaded Aseprite asset. By default (no `#label`), all visible layers are
+/// composited into a single atlas. Sub-asset labels provide per-layer access:
+///
+/// - `"file.aseprite"` — all visible layers composited (default)
+/// - `"file.aseprite#all"` — all layers including hidden ones
+/// - `"file.aseprite#Layer Name"` — a single named layer
+///
+/// All variants share the same atlas texture and layout.
+#[derive(Asset, Default, TypePath, Debug, Clone)]
 #[cfg_attr(feature = "asset_processing", derive(Serialize, Deserialize))]
 pub struct Aseprite {
     pub slices: HashMap<String, SliceMeta>,
@@ -33,6 +42,15 @@ pub struct Aseprite {
     #[cfg_attr(feature = "asset_processing", serde(skip))]
     pub atlas_image: Handle<Image>,
     pub(crate) frame_indicies: Vec<usize>,
+    /// The asset path this was loaded from, for constructing sub-asset paths.
+    #[cfg_attr(feature = "asset_processing", serde(skip))]
+    pub source_path: String,
+    /// All layer names in z-order (bottom to top).
+    #[cfg_attr(feature = "asset_processing", serde(skip))]
+    pub layer_names: Vec<LayerId>,
+    /// Layer names that are marked visible in the aseprite file.
+    #[cfg_attr(feature = "asset_processing", serde(skip))]
+    pub visible_layer_names: Vec<LayerId>,
 }
 
 impl Aseprite {
@@ -44,7 +62,7 @@ impl Aseprite {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "asset_processing", derive(Serialize, Deserialize))]
 pub struct TagMeta {
     #[cfg_attr(feature = "asset_processing", serde(with = "AnimationDirectionDef"))]
@@ -64,7 +82,7 @@ enum AnimationDirectionDef {
     Unknown(u8),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "asset_processing", derive(Serialize, Deserialize))]
 pub struct SliceKeyMeta {
     pub frame: usize,
@@ -73,7 +91,7 @@ pub struct SliceKeyMeta {
     pub nine_patch: Option<Vec4>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "asset_processing", derive(Serialize, Deserialize))]
 pub struct SliceMeta {
     pub rect: Rect,
@@ -132,52 +150,110 @@ impl AssetLoader for AsepriteLoader {
             .map_err(|_| AsepriteError::ReadError)?;
 
         let raw = AsepriteFile::load(&bytes)?;
+        let source_path = load_context.path().to_string();
+        let (width, height) = raw.size();
+        let buf_size = width as usize * height as usize * 4;
+        let num_frames = raw.frames().len();
 
-        let mut frame_images = Vec::new();
+        // Collect all rendered images with their IDs, then add to atlas in one pass.
+        let mut all_images: Vec<(AssetId<Image>, Image)> = Vec::new();
+
+        // Helper: render all frames with a given layer selection.
+        // Returns the AssetIds for each frame rendered.
+        let render_frames = |raw: &AsepriteFile,
+                             selection: &LayerSelection,
+                             sampler: &ImageSampler,
+                             images: &mut Vec<(AssetId<Image>, Image)>|
+         -> Result<Vec<AssetId<Image>>, AsepriteError> {
+            let mut frame_ids = Vec::with_capacity(num_frames);
+            for index in 0..num_frames {
+                let mut buffer = vec![0u8; buf_size];
+                raw.render_frame(index, buffer.as_mut_slice(), selection)?;
+
+                let image = Image {
+                    sampler: sampler.clone(),
+                    ..Image::new(
+                        Extent3d {
+                            width: width as u32,
+                            height: height as u32,
+                            depth_or_array_layers: 1,
+                        },
+                        TextureDimension::D2,
+                        buffer,
+                        TextureFormat::Rgba8UnormSrgb,
+                        RenderAssetUsages::default(),
+                    )
+                };
+                let id = AssetId::Uuid {
+                    uuid: Uuid::new_v4(),
+                };
+                images.push((id, image));
+                frame_ids.push(id);
+            }
+            Ok(frame_ids)
+        };
+
+        // ----------------------------- composite (visible layers or custom selection)
+        let composite_selection = match &settings.visible_layers {
+            Some(layers) => {
+                let names: Vec<&str> = layers.iter().map(|s| s.as_str()).collect();
+                raw.select_layers_by_name(&names)
+            }
+            None => LayerSelection::Visible,
+        };
+        let composite_ids = render_frames(
+            &raw,
+            &composite_selection,
+            &settings.sampler,
+            &mut all_images,
+        )?;
+
+        // ----------------------------- "all" composite (all layers including hidden)
+        let all_composite_ids = render_frames(
+            &raw,
+            &LayerSelection::All,
+            &settings.sampler,
+            &mut all_images,
+        )?;
+
+        // ----------------------------- per-layer renders
+        let mut layer_names: Vec<LayerId> = Vec::new();
+        let mut visible_layer_names: Vec<LayerId> = Vec::new();
+        let mut per_layer_ids: Vec<(LayerId, Vec<AssetId<Image>>)> = Vec::new();
+
+        for layer in raw.layers() {
+            let layer_id = LayerId::new(&layer.name);
+            layer_names.push(layer_id);
+            if layer.visible {
+                visible_layer_names.push(layer_id);
+            }
+
+            let selection = raw.select_layers_by_name(&[&layer.name]);
+            let ids = render_frames(
+                &raw,
+                &selection,
+                &settings.sampler,
+                &mut all_images,
+            )?;
+            per_layer_ids.push((layer_id, ids));
+        }
+
+        // ----------------------------- build shared atlas
         let mut atlas_builder = TextureAtlasBuilder::default();
         atlas_builder.max_size(UVec2::splat(4096));
-
-        let mut images = Vec::new();
-
-        for (index, _frame) in raw.frames().iter().enumerate() {
-            let (width, height) = raw.size();
-            let mut buffer = vec![0; width as usize * height as usize * 4];
-            
-            raw.render_frame(index, buffer.as_mut_slice(), &LayerSelection::All)?;
-
-            let image = Image {
-                sampler: settings.sampler.clone(),
-                ..Image::new(
-                    Extent3d {
-                        width: width as u32,
-                        height: height as u32,
-                        depth_or_array_layers: 1,
-                    },
-                    TextureDimension::D2,
-                    buffer.clone(),
-                    TextureFormat::Rgba8UnormSrgb,
-                    RenderAssetUsages::default(),
-                )
-            };
-            images.push(image);
+        for (id, image) in &all_images {
+            atlas_builder.add_texture(Some(*id), image);
         }
-
-        for image in images.iter() {
-            let handle_id = AssetId::Uuid {
-                uuid: Uuid::new_v4(),
-            };
-
-            frame_images.push(handle_id);
-            atlas_builder.add_texture(Some(handle_id), &image);
-        }
-
-        // ----------------------------- atlas
         let (mut layout, source, image) = atlas_builder.build()?;
 
-        let frame_indicies = frame_images
-            .iter()
-            .map(|id| source.texture_ids.get(id).cloned().unwrap())
-            .collect::<Vec<_>>();
+        let resolve_indices = |ids: &[AssetId<Image>]| -> Vec<usize> {
+            ids.iter()
+                .map(|id| source.texture_ids.get(id).cloned().unwrap())
+                .collect()
+        };
+
+        let composite_indicies = resolve_indices(&composite_ids);
+        let all_indicies = resolve_indices(&all_composite_ids);
 
         // ----------------------------- slices
         let mut slices = HashMap::new();
@@ -202,7 +278,8 @@ impl AssetLoader for AsepriteLoader {
                 None => None,
             };
 
-            let layout_id = layout.add_texture(URect::from_corners(min.as_uvec2(), max.as_uvec2()));
+            let layout_id =
+                layout.add_texture(URect::from_corners(min.as_uvec2(), max.as_uvec2()));
 
             let mut keys = Vec::new();
             for key in &slice.slice_keys {
@@ -235,6 +312,7 @@ impl AssetLoader for AsepriteLoader {
             );
         });
 
+        // ----------------------------- labeled sub-assets (shared atlas)
         let atlas_layout = load_context.add_labeled_asset("atlas_layout".into(), layout);
         let atlas_image = load_context.add_labeled_asset("atlas_texture".into(), image);
 
@@ -252,19 +330,58 @@ impl AssetLoader for AsepriteLoader {
         });
 
         // ---------------------------- frames
-        let frame_durations = raw
+        let frame_durations: Vec<std::time::Duration> = raw
             .frames()
             .iter()
             .map(|frame| std::time::Duration::from_millis(u64::from(frame.duration)))
             .collect();
 
+        // ----------------------------- "all" sub-asset
+        load_context.add_labeled_asset(
+            "all".into(),
+            Aseprite {
+                slices: slices.clone(),
+                tags: tags.clone(),
+                frame_durations: frame_durations.clone(),
+                atlas_layout: atlas_layout.clone(),
+                atlas_image: atlas_image.clone(),
+                frame_indicies: all_indicies,
+                source_path: source_path.clone(),
+                layer_names: layer_names.clone(),
+                visible_layer_names: visible_layer_names.clone(),
+            },
+        );
+
+        // ----------------------------- per-layer sub-assets
+        for (layer_id, ids) in &per_layer_ids {
+            let layer_indicies = resolve_indices(ids);
+            load_context.add_labeled_asset(
+                layer_id.as_str().into(),
+                Aseprite {
+                    slices: slices.clone(),
+                    tags: tags.clone(),
+                    frame_durations: frame_durations.clone(),
+                    atlas_layout: atlas_layout.clone(),
+                    atlas_image: atlas_image.clone(),
+                    frame_indicies: layer_indicies,
+                    source_path: source_path.clone(),
+                    layer_names: layer_names.clone(),
+                    visible_layer_names: visible_layer_names.clone(),
+                },
+            );
+        }
+
+        // ----------------------------- main asset (composite visible)
         Ok(Aseprite {
             slices,
             tags,
             frame_durations,
             atlas_layout,
             atlas_image,
-            frame_indicies,
+            frame_indicies: composite_indicies,
+            source_path,
+            layer_names,
+            visible_layer_names,
         })
     }
 

@@ -6,8 +6,8 @@ use bevy::{
 use bevy_aseprite_ultra::prelude::*;
 
 const LAYERS_ASE: &str = "layers.aseprite";
-const LAYERS_ASE_PATH: &str = "aseprite-loader/tests/layers.aseprite";
-const ASSET_DIR: &str = "aseprite-loader/tests";
+const LAYERS_ASE_PATH: &str = "assets/layers.aseprite";
+const ASSET_DIR: &str = "assets";
 
 fn make_app() -> App {
     let mut app = App::new();

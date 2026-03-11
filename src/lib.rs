@@ -6,6 +6,7 @@ use bevy::prelude::*;
 
 pub(crate) mod animation;
 pub(crate) mod error;
+pub(crate) mod layers;
 pub(crate) mod loader;
 #[cfg(feature = "asset_processing")]
 pub(crate) mod processor;
@@ -15,6 +16,9 @@ pub mod prelude {
     pub use crate::animation::{
         render_animation, Animation, AnimationDirection, AnimationEvents, AnimationRepeat,
         AnimationState, AseAnimation, ManualTick, NextFrameEvent, PlayDirection, RenderAnimation,
+    };
+    pub use crate::layers::{
+        AseLayeredAnimation, AseLayeredSlice, LayerFilter, LayerId, RenderTarget, SpriteLayerOf, SpriteLayers,
     };
     pub use crate::loader::{Aseprite, AsepriteLoaderPlugin, AsepriteLoaderSettings, SliceMeta};
     pub use crate::slice::{render_slice, AseSlice, RenderSlice};
@@ -40,28 +44,28 @@ pub mod prelude {
 /// // spawn sprites, animations and ui
 /// fn setup(mut cmd: Commands, server: Res<AssetServer>) {
 ///     // ui animation
-///     cmd.spawn(AseUiAnimation {
-///         aseprite: server.load("player.aseprite").into(),
-///         animation: Animation::default().with_tag("walk-right"),
-///     });
+///     cmd.spawn(AseAnimation::ui(
+///         server.load("player.aseprite"),
+///         Animation::default().with_tag("walk-right"),
+///     ));
 ///
 ///     // sprite animation
-///     cmd.spawn(AseSpriteAnimation {
-///         aseprite: server.load("player.aseprite").into(),
-///         animation: Animation::default().with_tag("walk-right"),
-///     });
+///     cmd.spawn(AseAnimation::sprite(
+///         server.load("player.aseprite"),
+///         Animation::default().with_tag("walk-right"),
+///     ));
 ///
 ///     // static sprite
-///     cmd.spawn(AseSpriteSlice {
-///         name: "ghost_red".into(),
-///         aseprite: server.load("ghost_slices.aseprite"),
-///     });
+///     cmd.spawn(AseSlice::sprite(
+///         server.load("ghost_slices.aseprite"),
+///         "ghost_red",
+///     ));
 ///
 ///     // static ui
-///     cmd.spawn(AseUiSlice {
-///         name: "ghost_red".into(),
-///         aseprite: server.load("ghost_slices.aseprite"),
-///     });
+///     cmd.spawn(AseSlice::ui(
+///         server.load("ghost_slices.aseprite"),
+///         "ghost_red",
+///     ));
 /// }
 ///
 /// ```
@@ -71,6 +75,7 @@ impl Plugin for AsepriteUltraPlugin {
         app.add_plugins(loader::AsepriteLoaderPlugin);
         app.add_plugins(slice::AsepriteSlicePlugin);
         app.add_plugins(animation::AsepriteAnimationPlugin);
+        app.add_plugins(layers::AsepriteLayersPlugin);
         #[cfg(feature = "asset_processing")]
         app.add_plugins(processor::AsepriteProcessorPlugin);
     }

@@ -99,12 +99,47 @@ impl<M: Material + RenderSlice> RenderSlice for MeshMaterial3d<M> {
     }
 }
 
-/// Displays a aseprite atlas slice
+/// Displays an aseprite atlas slice.
+///
+/// Use the factory methods [`AseSlice::sprite`] and [`AseSlice::ui`]
+/// to spawn with the appropriate render target:
+///
+/// ```rust
+/// // Sprite slice (2D world)
+/// cmd.spawn(AseSlice::sprite(server.load("ghost_slices.aseprite"), "ghost_red"));
+///
+/// // UI slice
+/// cmd.spawn(AseSlice::ui(server.load("ghost_slices.aseprite"), "ghost_red"));
+/// ```
 #[derive(Component, Reflect, Default, Debug, Clone)]
 #[reflect]
 pub struct AseSlice {
     pub name: String,
     pub aseprite: Handle<Aseprite>,
+}
+
+impl AseSlice {
+    /// Create a new `AseSlice` with a [`Sprite`] render target.
+    pub fn sprite(aseprite: Handle<Aseprite>, name: impl Into<String>) -> (AseSlice, Sprite) {
+        (
+            AseSlice {
+                name: name.into(),
+                aseprite,
+            },
+            Sprite::default(),
+        )
+    }
+
+    /// Create a new `AseSlice` with an [`ImageNode`] render target (for UI).
+    pub fn ui(aseprite: Handle<Aseprite>, name: impl Into<String>) -> (AseSlice, ImageNode) {
+        (
+            AseSlice {
+                name: name.into(),
+                aseprite,
+            },
+            ImageNode::default(),
+        )
+    }
 }
 
 pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(

@@ -146,7 +146,7 @@ Simply enable asset processing in your `AssetPlugin` like so:
 App::new()
     .add_plugins(DefaultPlugins.set(AssetPlugin {
         mode: AssetMode::Processed,
-        ..Default::default(),
+        ..Default::default()
     }))
     .run();
 ```

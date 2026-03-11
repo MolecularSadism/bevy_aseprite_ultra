@@ -27,6 +27,7 @@ serde = "1.0.218"
 rmp-serde = { version = "1.3.0", optional = true }
 image = { version = "0.25.6", optional = true }
 anyhow = "1.0.98"
+msg_interned_id = { git = "https://github.com/MolecularSadism/msg_interned_id" }
 
 [dev-dependencies]
 bevy = { version = "0.18", features = [
@@ -34,7 +35,7 @@ bevy = { version = "0.18", features = [
   "multi_threaded",
   "bevy_window",
 ] }
-aseprite-loader = { path = "aseprite-loader" }
+
 
 [features]
 asset_processing = [
