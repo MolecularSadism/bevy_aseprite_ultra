@@ -89,6 +89,21 @@ impl<M: Material2d + RenderSlice> RenderSlice for MeshMaterial2d<M> {
     }
 }
 
+impl<M: UiMaterial + RenderSlice> RenderSlice for MaterialNode<M> {
+    type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderSlice>::Extra<'e>);
+    fn render_slice(
+        &mut self,
+        aseprite: &Aseprite,
+        slice_meta: &SliceMeta,
+        extra: &mut Self::Extra<'_>,
+    ) {
+        let Some(material) = extra.0.get_mut(&*self) else {
+            return;
+        };
+        material.render_slice(aseprite, slice_meta, &mut extra.1);
+    }
+}
+
 #[cfg(feature = "3d")]
 impl<M: Material + RenderSlice> RenderSlice for MeshMaterial3d<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderSlice>::Extra<'e>);
@@ -110,7 +125,7 @@ impl<M: Material + RenderSlice> RenderSlice for MeshMaterial3d<M> {
 /// Slices are regions defined in the aseprite file. They support pivot
 /// offsets and 9-patch data for UI scaling.
 ///
-/// Use the factory methods [`AseSlice::sprite`] and [`AseSlice::ui`]
+/// Use [`AseSlice::new`] with [`AseBundled`](crate::AseBundled) methods
 /// to spawn with the appropriate render target:
 ///
 /// ```rust,no_run
@@ -118,10 +133,10 @@ impl<M: Material + RenderSlice> RenderSlice for MeshMaterial3d<M> {
 /// # use bevy_aseprite_ultra::prelude::*;
 /// # fn example(mut cmd: Commands, server: Res<AssetServer>) {
 /// // Sprite slice (2D world)
-/// cmd.spawn(AseSlice::sprite(server.load("icons.aseprite"), "ghost_red"));
+/// cmd.spawn(AseSlice::new(server.load("icons.aseprite"), "ghost_red").sprite());
 ///
 /// // UI slice
-/// cmd.spawn(AseSlice::ui(server.load("icons.aseprite"), "ghost_red"));
+/// cmd.spawn(AseSlice::new(server.load("icons.aseprite"), "ghost_red").ui());
 /// # }
 /// ```
 #[derive(Component, Reflect, Default, Debug, Clone)]
@@ -132,26 +147,13 @@ pub struct AseSlice {
 }
 
 impl AseSlice {
-    /// Create a new `AseSlice` with a [`Sprite`] render target.
-    pub fn sprite(aseprite: Handle<Aseprite>, name: impl Into<String>) -> (AseSlice, Sprite) {
-        (
-            AseSlice {
-                name: name.into(),
-                aseprite,
-            },
-            Sprite::default(),
-        )
-    }
-
-    /// Create a new `AseSlice` with an [`ImageNode`] render target (for UI).
-    pub fn ui(aseprite: Handle<Aseprite>, name: impl Into<String>) -> (AseSlice, ImageNode) {
-        (
-            AseSlice {
-                name: name.into(),
-                aseprite,
-            },
-            ImageNode::default(),
-        )
+    /// Create a new `AseSlice`. Pair with a render target via
+    /// [`AseBundled`](crate::AseBundled) methods (`.sprite()`, `.ui()`, etc.).
+    pub fn new(aseprite: Handle<Aseprite>, name: impl Into<String>) -> Self {
+        AseSlice {
+            name: name.into(),
+            aseprite,
+        }
     }
 }
 

@@ -147,7 +147,7 @@ impl<M: Material + RenderAnimation> RenderAnimation for MeshMaterial3d<M> {
 /// Automatically requires [`AnimationState`], [`Visibility`], and
 /// [`InheritedVisibility`] — no need to add them manually.
 ///
-/// Use the factory methods [`AseAnimation::sprite`] and [`AseAnimation::ui`]
+/// Use [`AseAnimation::new`] with [`AseBundled`](crate::AseBundled) methods
 /// to spawn with the appropriate render target:
 ///
 /// ```rust,no_run
@@ -155,16 +155,16 @@ impl<M: Material + RenderAnimation> RenderAnimation for MeshMaterial3d<M> {
 /// # use bevy_aseprite_ultra::prelude::*;
 /// # fn example(mut cmd: Commands, server: Res<AssetServer>) {
 /// // Sprite animation (2D world)
-/// cmd.spawn(AseAnimation::sprite(
+/// cmd.spawn(AseAnimation::new(
 ///     Animation::tag("walk-right"),
 ///     server.load("player.aseprite"),
-/// ));
+/// ).sprite());
 ///
 /// // UI animation
-/// cmd.spawn(AseAnimation::ui(
+/// cmd.spawn(AseAnimation::new(
 ///     Animation::tag("walk-right"),
 ///     server.load("player.aseprite"),
-/// ));
+/// ).ui());
 /// # }
 /// ```
 #[derive(Component, Default, Reflect, Clone, Debug)]
@@ -178,20 +178,10 @@ pub struct AseAnimation {
 }
 
 impl AseAnimation {
-    /// Create a new `AseAnimation` with a [`Sprite`] render target.
-    pub fn sprite(
-        animation: Animation,
-        aseprite: Handle<Aseprite>,
-    ) -> (AseAnimation, Sprite) {
-        (AseAnimation { animation, aseprite }, Sprite::default())
-    }
-
-    /// Create a new `AseAnimation` with an [`ImageNode`] render target (for UI).
-    pub fn ui(
-        animation: Animation,
-        aseprite: Handle<Aseprite>,
-    ) -> (AseAnimation, ImageNode, Node) {
-        (AseAnimation { animation, aseprite }, ImageNode::default(), Node::default(),)
+    /// Create a new `AseAnimation`. Pair with a render target via
+    /// [`AseBundled`](crate::AseBundled) methods (`.sprite()`, `.ui()`, etc.).
+    pub fn new(animation: Animation, aseprite: Handle<Aseprite>) -> Self {
+        AseAnimation { animation, aseprite }
     }
 }
 

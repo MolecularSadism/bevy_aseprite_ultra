@@ -26,10 +26,10 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
 
     // Layer 1 only via sub-asset label
     cmd.spawn((
-        AseAnimation::sprite(
+        AseAnimation::new(
             Animation::default(),
             server.load("animated_layers.aseprite#Layer 1"),
-        ),
+        ).sprite(),
         Transform::from_translation(Vec3::new(-22., 0., 0.)),
     ));
 

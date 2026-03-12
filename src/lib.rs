@@ -53,6 +53,21 @@ pub trait AseBundled: Sized {
     }
 
     /// Pair with an [`ImageNode`] render target (UI).
+    ///
+    /// [`ImageNode`] automatically requires [`Node`], so a default `Node` is
+    /// inserted for you. Add your own `Node` to the spawn bundle to control
+    /// sizing and layout:
+    ///
+    /// ```rust,ignore
+    /// cmd.spawn((
+    ///     AseAnimation::new(anim, ase).ui(),
+    ///     Node {
+    ///         width: Val::Px(64.),
+    ///         height: Val::Px(64.),
+    ///         ..default()
+    ///     },
+    /// ));
+    /// ```
     fn ui(self) -> (Self, ImageNode) {
         (self, ImageNode::default())
     }
