@@ -22,52 +22,45 @@ fn main() {
 fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn((Camera2d, Transform::default().with_scale(Vec3::splat(0.15))));
 
-    // ---- Baked AseAnimation (left group) ----
+    // ---- Baked AseTexture (left group) ----
 
-    // Layer 1 only via sub-asset label
+    // Layer 1 only via layer filter on baked texture
     cmd.spawn((
-        AseAnimation::new(
-            Animation::default(),
-            server.load("layers.aseprite#Layer 1"),
-        ).sprite(),
+        AseTexture::baked(server.load("layers.aseprite"))
+            .with_layers(LayerFilter::Include(vec![LayerId::new("Layer 1")]))
+            .sprite(),
+        AseAnimation::default(),
         Transform::from_translation(Vec3::new(-22., 0., 0.)),
     ));
 
     // All visible layers composed into one sprite (default)
     cmd.spawn((
-        AseAnimation {
-            animation: Animation::default(),
-            aseprite: server.load("layers.aseprite"),
-        },
-        Sprite::default(),
+        AseTexture::baked(server.load("layers.aseprite")).sprite(),
+        AseAnimation::default(),
         Transform::from_translation(Vec3::new(-10., 0., 0.)),
     ));
 
-    // ---- AseLayeredAnimation (right group) ----
+    // ---- Layered AseTexture (right group) ----
 
     // Layer 1 only
     cmd.spawn((
-        AseLayeredAnimation {
-            animation: Animation::default(),
-            aseprite: server.load("layers.aseprite"),
-            layers: LayerFilter::Include(vec![LayerId::new("Layer 1")]),
-            render_target: RenderTarget::Sprite,
-        },
+        AseTexture::new(server.load("layers.aseprite"))
+            .with_layers(LayerFilter::Include(vec![LayerId::new("Layer 1")]))
+            .sprite(),
+        AseAnimation::default(),
         DefaultFilter(LayerFilter::Include(vec![LayerId::new("Layer 1")])),
         Transform::from_translation(Vec3::new(10., 0., 0.)),
     ));
 
     // Layer 1 + Layer 2
     cmd.spawn((
-        AseLayeredAnimation {
-            animation: Animation::default(),
-            aseprite: server.load("layers.aseprite"),
-            layers: LayerFilter::Include(vec![
+        AseTexture::new(server.load("layers.aseprite"))
+            .with_layers(LayerFilter::Include(vec![
                 LayerId::new("Layer 1"),
                 LayerId::new("Layer 2"),
-            ]),
-            render_target: RenderTarget::Sprite,
-        },
+            ]))
+            .sprite(),
+        AseAnimation::default(),
         DefaultFilter(LayerFilter::Include(vec![
             LayerId::new("Layer 1"),
             LayerId::new("Layer 2"),
@@ -77,12 +70,8 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
 
     // All visible layers (Layer 1 + 2 + 3)
     cmd.spawn((
-        AseLayeredAnimation {
-            animation: Animation::default(),
-            aseprite: server.load("layers.aseprite"),
-            layers: LayerFilter::Visible,
-            render_target: RenderTarget::Sprite,
-        },
+        AseTexture::new(server.load("layers.aseprite")).sprite(),
+        AseAnimation::default(),
         DefaultFilter(LayerFilter::Visible),
         Transform::from_translation(Vec3::new(40., 0., 0.)),
     ));
@@ -108,7 +97,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
         })
         .with_children(|row| {
             row.spawn((
-                Text::new("Baked AseAnimation"),
+                Text::new("Baked AseTexture"),
                 TextFont {
                     font_size: 16.,
                     ..default()
@@ -116,7 +105,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
                 TextColor(css::WHITE.into()),
             ));
             row.spawn((
-                Text::new("AseLayeredAnimation"),
+                Text::new("Layered AseTexture"),
                 TextFont {
                     font_size: 16.,
                     ..default()

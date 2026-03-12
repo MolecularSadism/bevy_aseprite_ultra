@@ -1,3 +1,4 @@
+use crate::layers::{AseTexture, SpriteLayers};
 use crate::loader::Aseprite;
 use anyhow::Context;
 use aseprite_loader::binary::chunks::tags::AnimationDirection as RawDirection;
@@ -16,17 +17,20 @@ pub struct AsepriteAnimationPlugin;
 impl Plugin for AsepriteAnimationPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<AnimationEvents>();
-        app.add_systems(PreUpdate, update_aseprite_animation);
+        app.add_systems(PreUpdate, (update_aseprite_animation, propagate_frame).chain());
 
         app.add_systems(
             PostUpdate,
-            render_animation::<ImageNode>.before(UiSystems::Prepare),
+            (
+                render_children_animation::<ImageNode>.before(UiSystems::Prepare),
+                render_children_animation::<Sprite>,
+                render_animation::<ImageNode>.before(UiSystems::Prepare),
+                render_animation::<Sprite>,
+            ),
         );
-        app.add_systems(PostUpdate, render_animation::<Sprite>);
         app.add_observer(next_frame);
 
         app.register_type::<AseAnimation>();
-        app.register_type::<Animation>();
         app.register_type::<AnimationState>();
         app.register_type::<PlayDirection>();
         app.register_type::<AnimationRepeat>();
@@ -34,35 +38,12 @@ impl Plugin for AsepriteAnimationPlugin {
 }
 
 /// Any component that implements this trait can be used as a render target for
-/// [`AseAnimation`]. The plugin ships with implementations for [`Sprite`],
+/// aseprite animations. The plugin ships with implementations for [`Sprite`],
 /// [`ImageNode`], [`MeshMaterial2d`], and [`MaterialNode`] (plus [`MeshMaterial3d`]
 /// with the `3d` feature).
 ///
 /// Implement this trait on your own material to drive custom shaders with
 /// aseprite animation data.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// impl RenderAnimation for MyMaterial {
-///     type Extra<'e> = (Res<'e, Time>, Res<'e, Assets<TextureAtlasLayout>>);
-///     fn render_animation(
-///         &mut self,
-///         aseprite: &Aseprite,
-///         state: &AnimationState,
-///         extra: &mut Self::Extra<'_>,
-///     ) {
-///         let Some(atlas_layout) = extra.1.get(&aseprite.atlas_layout) else {
-///             return;
-///         };
-///         self.image = aseprite.atlas_image.clone();
-///         let index = aseprite.get_atlas_index(usize::from(state.current_frame));
-///         self.texture_min = atlas_layout.textures[index].min;
-///         self.texture_max = atlas_layout.textures[index].max;
-///         self.time = extra.0.elapsed_secs();
-///     }
-/// }
-/// ```
 pub trait RenderAnimation {
     /// An extra system parameter used in rendering. Use a tuple if many are required.
     type Extra<'e>;
@@ -142,91 +123,31 @@ impl<M: Material + RenderAnimation> RenderAnimation for MeshMaterial3d<M> {
     }
 }
 
-/// Renders an aseprite animation on any component that implements [`RenderAnimation`].
+// ---- Components ----
+
+/// The primary animation component. Add alongside [`AseTexture`] to enable
+/// animation. The tick logic runs once on the parent entity and frame state
+/// is propagated to all child render entities.
 ///
-/// Automatically requires [`AnimationState`], [`Visibility`], and
-/// [`InheritedVisibility`] — no need to add them manually.
-///
-/// Use [`AseAnimation::new`] with [`AseBundled`](crate::AseBundled) methods
-/// to spawn with the appropriate render target:
-///
-/// ```rust,no_run
+/// ```rust
 /// # use bevy::prelude::*;
 /// # use bevy_aseprite_ultra::prelude::*;
 /// # fn example(mut cmd: Commands, server: Res<AssetServer>) {
-/// // Sprite animation (2D world)
-/// cmd.spawn(AseAnimation::new(
-///     Animation::tag("walk-right"),
-///     server.load("player.aseprite"),
-/// ).sprite());
-///
-/// // UI animation
-/// cmd.spawn(AseAnimation::new(
-///     Animation::tag("walk-right"),
-///     server.load("player.aseprite"),
-/// ).ui());
+/// cmd.spawn((
+///     AseTexture::new(server.load("player.aseprite")).sprite(),
+///     AseAnimation::tag("walk-right"),
+/// ));
 /// # }
 /// ```
-#[derive(Component, Default, Reflect, Clone, Debug)]
+#[derive(Component, Debug, Clone, Reflect)]
 #[require(AnimationState)]
-#[require(Visibility)]
-#[require(InheritedVisibility)]
 #[reflect]
 pub struct AseAnimation {
-    pub animation: Animation,
-    pub aseprite: Handle<Aseprite>,
-}
-
-impl AseAnimation {
-    /// Create a new `AseAnimation`. Pair with a render target via
-    /// [`AseBundled`](crate::AseBundled) methods (`.sprite()`, `.ui()`, etc.).
-    pub fn new(animation: Animation, aseprite: Handle<Aseprite>) -> Self {
-        AseAnimation { animation, aseprite }
-    }
-}
-
-pub fn render_animation<T: RenderAnimation + Component<Mutability = Mutable>>(
-    mut animations: Query<(&AseAnimation, &mut T, &AnimationState)>,
-    aseprites: Res<Assets<Aseprite>>,
-    mut extra: <T as RenderAnimation>::Extra<'_>,
-) {
-    for (animation, mut target, state) in &mut animations {
-        let Some(aseprite) = aseprites.get(&animation.aseprite) else {
-            continue;
-        };
-        target.render_animation(aseprite, state, &mut extra);
-    }
-}
-
-/// Marker component that disables automatic animation ticking.
-///
-/// When present, the plugin will not advance frames automatically.
-/// Use [`NextFrameEvent`] to manually advance frames, or modify
-/// [`AnimationState`] directly.
-#[derive(Component)]
-pub struct ManualTick;
-
-/// Configuration for an aseprite animation.
-///
-/// Use the builder methods to configure tag, speed, repeat, direction,
-/// and animation chaining:
-///
-/// ```rust,no_run
-/// # use bevy_aseprite_ultra::prelude::*;
-/// let anim = Animation::tag("walk-right")
-///     .with_speed(1.5)
-///     .with_repeat(AnimationRepeat::Count(3))
-///     .with_direction(AnimationDirection::PingPong)
-///     .with_then("idle", AnimationRepeat::Loop);
-/// ```
-#[derive(Debug, Clone, Reflect)]
-#[reflect]
-pub struct Animation {
     pub tag: Option<String>,
     pub speed: f32,
     pub playing: bool,
     pub repeat: AnimationRepeat,
-    // overwrite aseprite direction
+    /// Overwrite aseprite direction
     pub direction: Option<AnimationDirection>,
     pub queue: VecDeque<(String, AnimationRepeat)>,
     pub hold_relative_frame: bool,
@@ -234,7 +155,7 @@ pub struct Animation {
     pub new_relative_group: u16,
 }
 
-impl Default for Animation {
+impl Default for AseAnimation {
     fn default() -> Self {
         Self {
             tag: None,
@@ -250,49 +171,49 @@ impl Default for Animation {
     }
 }
 
-impl Animation {
-    /// animation from tag
+impl AseAnimation {
+    /// Animation from tag.
     pub fn tag(tag: &str) -> Self {
         Self::default().with_tag(tag)
     }
 
-    /// animation speed multiplier, default is 1.0
+    /// Animation speed multiplier, default is 1.0.
     pub fn with_speed(mut self, speed: f32) -> Self {
         self.speed = speed;
         self
     }
 
-    /// animation holds relative frame when tag changes, default is false
+    /// Animation holds relative frame when tag changes, default is false.
     pub fn with_relative_frame_hold(mut self, hold_relative_frame: bool) -> Self {
         self.hold_relative_frame = hold_relative_frame;
         self
     }
 
-    /// animation with tag
+    /// Animation with tag.
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
         self.tag = Some(tag.into());
         self
     }
 
-    /// sets a repeat count, defaults is loop
+    /// Sets a repeat count, default is loop.
     pub fn with_repeat(mut self, repeat: AnimationRepeat) -> Self {
         self.repeat = repeat;
         self
     }
 
-    /// provides an animation direction, overwrites aseprite direction
+    /// Provides an animation direction, overwrites aseprite direction.
     pub fn with_direction(mut self, direction: AnimationDirection) -> Self {
         self.direction = Some(direction);
         self
     }
 
-    /// chains an animation after the current one is done
+    /// Chains an animation after the current one is done.
     pub fn with_then(mut self, tag: impl Into<String>, repeats: AnimationRepeat) -> Self {
         self.queue.push_back((tag.into(), repeats));
         self
     }
 
-    /// instanly starts playing a new animation, clearing any item left in the queue.
+    /// Instantly starts playing a new animation, clearing any item left in the queue.
     pub fn play(&mut self, tag: impl Into<String>, repeat: AnimationRepeat) {
         self.playing = true;
         self.tag = Some(tag.into());
@@ -300,7 +221,8 @@ impl Animation {
         self.queue.clear();
     }
 
-    /// instanly starts playing a new animation starting with same relative frame only if the new relative group is the same as the previous one.
+    /// Instantly starts playing a new animation starting with same relative frame
+    /// only if the new relative group is the same as the previous one.
     pub fn play_with_relative_group(
         &mut self,
         tag: impl Into<String>,
@@ -314,7 +236,7 @@ impl Animation {
         self.queue.clear();
     }
 
-    /// instanly starts playing a new animation, clearing any item left in the queue.
+    /// Instantly starts playing a new looping animation.
     pub fn play_loop(&mut self, tag: impl Into<String>) {
         self.playing = true;
         self.tag = Some(tag.into());
@@ -322,7 +244,7 @@ impl Animation {
         self.queue.clear();
     }
 
-    /// instantly stops the currently playing animation, clearing any item left in the queue.
+    /// Instantly stops the currently playing animation.
     pub fn stop(&mut self) {
         self.playing = false;
         self.tag = None;
@@ -330,22 +252,22 @@ impl Animation {
         self.queue.clear();
     }
 
-    /// pauses the currently playing animation
+    /// Pauses the currently playing animation.
     pub fn pause(&mut self) {
         self.playing = false;
     }
 
-    /// starts the currently set animation
+    /// Starts the currently set animation.
     pub fn start(&mut self) {
         self.playing = true;
     }
 
-    /// chains an animation after the current one is done
+    /// Chains an animation after the current one is done.
     pub fn then(&mut self, tag: impl Into<String>, repeats: AnimationRepeat) {
         self.queue.push_back((tag.into(), repeats));
     }
 
-    /// clears any queued up animations
+    /// Clears any queued up animations.
     pub fn clear_queue(&mut self) {
         self.queue.clear()
     }
@@ -358,15 +280,43 @@ impl Animation {
     }
 }
 
-impl From<&str> for Animation {
+impl From<&str> for AseAnimation {
     fn from(tag: &str) -> Self {
-        Animation {
+        AseAnimation {
             tag: Some(tag.to_string()),
             speed: 1.0,
             ..Default::default()
         }
     }
 }
+
+/// Internal component placed on child entities spawned by [`AseTexture`].
+///
+/// Public so advanced users can query layer children, but not intended for
+/// direct construction in typical usage. Each child carries its own per-layer
+/// asset handle.
+///
+/// Can also be used standalone with [`AseAnimation`] for custom material
+/// rendering without the parent-child model.
+#[derive(Component, Default, Reflect, Clone, Debug)]
+#[reflect]
+pub struct AnimationLayer {
+    pub aseprite: Handle<Aseprite>,
+}
+
+impl AnimationLayer {
+    pub fn new(aseprite: Handle<Aseprite>) -> Self {
+        AnimationLayer { aseprite }
+    }
+}
+
+/// Marker component that disables automatic animation ticking.
+///
+/// When present, the plugin will not advance frames automatically.
+/// Use [`NextFrameEvent`] to manually advance frames, or modify
+/// [`AnimationState`] directly.
+#[derive(Component)]
+pub struct ManualTick;
 
 /// Tracks the current frame and elapsed time of an animation.
 ///
@@ -376,8 +326,6 @@ impl From<&str> for Animation {
 #[derive(Component, Debug, Default, Reflect)]
 #[reflect]
 pub struct AnimationState {
-    /// The frame index relative to the current tag's start. Changing this
-    /// out of bounds may cause a panic.
     pub relative_frame: u16,
     pub current_frame: u16,
     pub elapsed: std::time::Duration,
@@ -413,8 +361,7 @@ pub enum AnimationEvents {
     LoopCycleFinished(Entity),
 }
 
-/// Playback direction for an animation. Overrides the direction set in
-/// the aseprite file when provided via [`Animation::with_direction`].
+/// Playback direction for an animation.
 #[derive(Default, Clone, Reflect, Debug)]
 #[reflect]
 pub enum AnimationDirection {
@@ -455,23 +402,43 @@ impl From<u16> for AnimationRepeat {
     }
 }
 
+// ---- Systems ----
+
+/// Resolves the aseprite handle for tick/frame logic.
+/// Parents have AseTexture, standalone entities have AnimationLayer.
+fn resolve_handle<'a>(
+    tex: Option<&'a AseTexture>,
+    layer: Option<&'a AnimationLayer>,
+) -> Option<&'a Handle<Aseprite>> {
+    tex.map(|t| &t.aseprite)
+        .or_else(|| layer.map(|l| &l.aseprite))
+}
+
+/// Ticks animation state on entities with [`AseAnimation`].
+/// Works for both parent entities (with [`AseTexture`]) and standalone
+/// entities (with [`AnimationLayer`], e.g. for custom materials).
 pub fn update_aseprite_animation(
     mut cmd: Commands,
     mut animations: Query<(
         Entity,
         &mut AseAnimation,
         &mut AnimationState,
+        Option<&AseTexture>,
+        Option<&AnimationLayer>,
         Has<ManualTick>,
     )>,
     aseprites: Res<Assets<Aseprite>>,
     time: Res<Time>,
 ) -> Result<(), BevyError> {
-    for (entity, mut animation, mut state, is_manual) in animations.iter_mut() {
-        let Some(aseprite) = aseprites.get(&animation.aseprite) else {
+    for (entity, mut animation, mut state, tex, layer, is_manual) in animations.iter_mut() {
+        let Some(handle) = resolve_handle(tex, layer) else {
+            continue;
+        };
+        let Some(aseprite) = aseprites.get(handle) else {
             continue;
         };
 
-        let range = match animation.animation.tag.as_ref() {
+        let range = match animation.tag.as_ref() {
             Some(tag) => aseprite
                 .tags
                 .get(tag)
@@ -482,20 +449,15 @@ pub fn update_aseprite_animation(
             None => 0..=(aseprite.frame_durations.len() as u16 - 1),
         };
 
-        // has to check start and end! because hot reloading can cause
-        // animations to be outside of the animation range
         if !range.contains(&state.current_frame) {
-            //Default code
-            if !animation.animation.hold_relative_frame {
+            if !animation.hold_relative_frame {
                 state.current_frame = *range.start();
                 state.relative_frame = 0;
-                animation.animation.relative_group = 0;
-                animation.animation.new_relative_group = 0;
-
-            // Using relative frame switching
+                animation.relative_group = 0;
+                animation.new_relative_group = 0;
             } else {
-                if animation.animation.new_relative_group != animation.animation.relative_group {
-                    animation.animation.relative_group = animation.animation.new_relative_group;
+                if animation.new_relative_group != animation.relative_group {
+                    animation.relative_group = animation.new_relative_group;
                     state.current_frame = *range.start();
                     state.relative_frame = 0;
                     state.elapsed = std::time::Duration::ZERO;
@@ -511,12 +473,12 @@ pub fn update_aseprite_animation(
             continue;
         }
 
-        if !animation.animation.playing {
+        if !animation.playing {
             continue;
         }
 
         state.elapsed +=
-            std::time::Duration::from_secs_f32(time.delta_secs() * animation.animation.speed);
+            std::time::Duration::from_secs_f32(time.delta_secs() * animation.speed);
 
         let Some(frame_duration) = aseprite
             .frame_durations
@@ -543,34 +505,40 @@ pub struct NextFrameEvent(pub Entity);
 fn next_frame(
     trigger: On<NextFrameEvent>,
     mut events: MessageWriter<AnimationEvents>,
-    mut animations: Query<(&mut AnimationState, &mut AseAnimation)>,
+    mut animations: Query<(
+        &mut AnimationState,
+        &mut AseAnimation,
+        Option<&AseTexture>,
+        Option<&AnimationLayer>,
+    )>,
     aseprites: Res<Assets<Aseprite>>,
 ) {
-    let Ok((mut state, mut ase)) = animations.get_mut(trigger.0) else {
+    let Ok((mut state, mut anim, tex, layer)) = animations.get_mut(trigger.0) else {
         return;
     };
 
-    let Some(aseprite) = aseprites.get(&ase.aseprite) else {
+    let Some(handle) = resolve_handle(tex, layer) else {
+        return;
+    };
+    let Some(aseprite) = aseprites.get(handle) else {
         return;
     };
 
-    let animation = &mut ase.animation;
-
-    let (range, direction) = match animation
+    let (range, direction) = match anim
         .tag
         .as_ref()
         .map(|t| aseprite.tags.get(t))
         .flatten()
     {
         Some(meta) => {
-            let dir = animation
+            let dir = anim
                 .direction
                 .clone()
                 .unwrap_or(AnimationDirection::from(meta.direction));
             (meta.range.clone(), dir)
         }
         None => {
-            let dir = animation
+            let dir = anim
                 .direction
                 .clone()
                 .unwrap_or(AnimationDirection::Forward);
@@ -583,7 +551,7 @@ fn next_frame(
             let next = state.current_frame + 1;
 
             if next > *range.end() {
-                match animation.repeat {
+                match anim.repeat {
                     AnimationRepeat::Loop => {
                         state.current_frame = *range.start();
                         state.relative_frame = 0;
@@ -593,12 +561,12 @@ fn next_frame(
                         if count > 0 {
                             state.current_frame = *range.start();
                             state.relative_frame = 0;
-                            animation.repeat = AnimationRepeat::Count(count - 1);
+                            anim.repeat = AnimationRepeat::Count(count - 1);
                         } else {
-                            if animation.queue.is_empty() {
+                            if anim.queue.is_empty() {
                                 events.write(AnimationEvents::Finished(trigger.0));
                             } else {
-                                animation.next();
+                                anim.next();
                             }
                         }
                     }
@@ -612,7 +580,7 @@ fn next_frame(
             let next = state.current_frame.checked_sub(1).unwrap_or(*range.end());
 
             if next == *range.end() {
-                match animation.repeat {
+                match anim.repeat {
                     AnimationRepeat::Loop => {
                         state.current_frame = range.end() - 1;
                         state.relative_frame = range.end() - range.start() - 1;
@@ -622,12 +590,12 @@ fn next_frame(
                         if count > 0 {
                             state.current_frame = range.end() - 1;
                             state.relative_frame = range.end() - range.start() - 1;
-                            animation.repeat = AnimationRepeat::Count(count - 1);
+                            anim.repeat = AnimationRepeat::Count(count - 1);
                         } else {
-                            if animation.queue.is_empty() {
+                            if anim.queue.is_empty() {
                                 events.write(AnimationEvents::Finished(trigger.0));
                             } else {
-                                animation.next();
+                                anim.next();
                             }
                         }
                     }
@@ -655,7 +623,7 @@ fn next_frame(
             };
 
             if next >= *range.end() && is_forward {
-                match animation.repeat {
+                match anim.repeat {
                     AnimationRepeat::Loop => {
                         state.current_direction = PlayDirection::Backward;
                         state.current_frame = range.end() - 2;
@@ -667,18 +635,18 @@ fn next_frame(
                             state.current_direction = PlayDirection::Backward;
                             state.current_frame = range.end() - 2;
                             state.relative_frame = range.end() - range.start() - 2;
-                            animation.repeat = AnimationRepeat::Count(count - 1);
+                            anim.repeat = AnimationRepeat::Count(count - 1);
                         } else {
-                            if animation.queue.is_empty() {
+                            if anim.queue.is_empty() {
                                 events.write(AnimationEvents::Finished(trigger.0));
                             } else {
-                                animation.next();
+                                anim.next();
                             }
                         }
                     }
                 };
             } else if next <= *range.start() && !is_forward {
-                match animation.repeat {
+                match anim.repeat {
                     AnimationRepeat::Loop => {
                         state.current_direction = PlayDirection::Forward;
                         state.current_frame = *range.start();
@@ -690,12 +658,12 @@ fn next_frame(
                             state.current_direction = PlayDirection::Forward;
                             state.current_frame = *range.start();
                             state.relative_frame = 0;
-                            animation.repeat = AnimationRepeat::Count(count - 1);
+                            anim.repeat = AnimationRepeat::Count(count - 1);
                         } else {
-                            if animation.queue.is_empty() {
+                            if anim.queue.is_empty() {
                                 events.write(AnimationEvents::Finished(trigger.0));
                             } else {
-                                animation.next();
+                                anim.next();
                             }
                         }
                     }
@@ -706,4 +674,63 @@ fn next_frame(
             }
         }
     };
+}
+
+/// Propagates parent [`AnimationState`] to children's render targets.
+/// Runs after tick so children always reflect the latest frame.
+fn propagate_frame(
+    parents: Query<(&AnimationState, &SpriteLayers), With<AseAnimation>>,
+    mut child_sprites: Query<&mut AnimationState, Without<AseAnimation>>,
+) {
+    for (parent_state, layers) in &parents {
+        for child in layers.iter() {
+            if let Ok(mut child_state) = child_sprites.get_mut(child) {
+                child_state.current_frame = parent_state.current_frame;
+                child_state.relative_frame = parent_state.relative_frame;
+                child_state.elapsed = parent_state.elapsed;
+                child_state.current_direction = match &parent_state.current_direction {
+                    PlayDirection::Forward => PlayDirection::Forward,
+                    PlayDirection::Backward => PlayDirection::Backward,
+                };
+            }
+        }
+    }
+}
+
+// ---- Render systems ----
+
+/// Renders animation frames on child entities via parent → child iteration.
+/// Registered for [`Sprite`] and [`ImageNode`] by default.
+/// Register for your custom material type to support material rendering on children.
+pub fn render_children_animation<T: RenderAnimation + Component<Mutability = Mutable>>(
+    parents: Query<(&AnimationState, &SpriteLayers), With<AseAnimation>>,
+    mut children: Query<(&AnimationLayer, &mut T)>,
+    aseprites: Res<Assets<Aseprite>>,
+    mut extra: <T as RenderAnimation>::Extra<'_>,
+) {
+    for (state, layers) in &parents {
+        for child in layers.iter() {
+            if let Ok((layer, mut target)) = children.get_mut(child) {
+                let Some(aseprite) = aseprites.get(&layer.aseprite) else {
+                    continue;
+                };
+                target.render_animation(aseprite, state, &mut extra);
+            }
+        }
+    }
+}
+
+/// Renders animation frames on standalone entities that have both
+/// [`AnimationLayer`] and [`AnimationState`] directly (e.g. custom materials).
+pub fn render_animation<T: RenderAnimation + Component<Mutability = Mutable>>(
+    mut animations: Query<(&AnimationLayer, &mut T, &AnimationState), Without<SpriteLayers>>,
+    aseprites: Res<Assets<Aseprite>>,
+    mut extra: <T as RenderAnimation>::Extra<'_>,
+) {
+    for (layer, mut target, state) in &mut animations {
+        let Some(aseprite) = aseprites.get(&layer.aseprite) else {
+            continue;
+        };
+        target.render_animation(aseprite, state, &mut extra);
+    }
 }

@@ -1,4 +1,4 @@
-use crate::animation::{AseAnimation, Animation};
+use crate::animation::{AseAnimation, AnimationLayer, AnimationState};
 use crate::loader::Aseprite;
 use crate::slice::AseSlice;
 use bevy::prelude::*;
@@ -23,10 +23,9 @@ impl Plugin for AsepriteLayersPlugin {
         app.add_systems(
             PreUpdate,
             (
-                spawn_animation_layers,
-                spawn_slice_layers,
-                update_animation_layers,
-                update_slice_layers,
+                spawn_layers,
+                update_layers,
+                propagate_flip,
             ),
         );
     }
@@ -36,9 +35,13 @@ impl Plugin for AsepriteLayersPlugin {
 #[derive(InternedId, Component, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct LayerId(bevy::ecs::intern::Interned<str>);
 
+/// Type-safe interned slice name. O(1) comparisons, `Copy`.
+#[derive(InternedId, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct SliceId(bevy::ecs::intern::Interned<str>);
+
 /// Selects which layers to spawn as children.
 ///
-/// ```rust,no_run
+/// ```rust
 /// # use bevy_aseprite_ultra::prelude::*;
 /// // All layers including hidden ones
 /// let all = LayerFilter::All;
@@ -52,20 +55,15 @@ pub struct LayerId(bevy::ecs::intern::Interned<str>);
 ///     LayerId::new("hat"),
 /// ]);
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum LayerFilter {
     /// All layers including hidden ones.
     All,
     /// Only layers marked visible in the aseprite file (default).
+    #[default]
     Visible,
     /// Only these specific layers.
     Include(Vec<LayerId>),
-}
-
-impl Default for LayerFilter {
-    fn default() -> Self {
-        Self::Visible
-    }
 }
 
 /// Relationship: this entity is a sprite layer of the target entity.
@@ -78,65 +76,115 @@ pub struct SpriteLayerOf(pub Entity);
 #[relationship_target(relationship = SpriteLayerOf)]
 pub struct SpriteLayers(Vec<Entity>);
 
-/// Spawns a child [`AseAnimation`] per layer for full composition control.
+/// The primary component for displaying aseprite assets.
 ///
-/// Each child entity gets [`ChildOf`], [`SpriteLayerOf`], [`LayerId`], and
-/// the appropriate render component ([`Sprite`] or [`ImageNode`]).
-/// The parent entity does **not** render — the children handle all rendering.
+/// Always spawns child entities for rendering — the parent entity itself does
+/// not render. Use [`baked`](AseTexture::baked) mode for a single composite
+/// child, or the default layered mode for per-layer children.
 ///
-/// Toggle layer visibility at runtime via [`Visibility`] on the children.
-/// Mutating this component diffs existing children: only layers that were
-/// added or removed are spawned or despawned.
+/// Add [`AseAnimation`] alongside this component to opt into animation ticking.
+/// Without it, children are fully static with zero per-tick overhead.
 ///
-/// ```rust,no_run
+/// ```rust
 /// # use bevy::prelude::*;
 /// # use bevy_aseprite_ultra::prelude::*;
 /// # fn example(mut cmd: Commands, server: Res<AssetServer>) {
-/// cmd.spawn(AseLayeredAnimation {
-///     animation: Animation::tag("idle"),
-///     aseprite: server.load("character.aseprite"),
-///     layers: LayerFilter::Visible,
-///     render_target: RenderTarget::Sprite,
-/// });
+/// // Layered animation (default)
+/// cmd.spawn((
+///     AseTexture::new(server.load("player.aseprite")).sprite(),
+///     AseAnimation::tag("walk"),
+/// ));
+///
+/// // Baked animation (single composite child)
+/// cmd.spawn((
+///     AseTexture::baked(server.load("player.aseprite")).sprite(),
+///     AseAnimation::tag("idle"),
+/// ));
+///
+/// // Static slice (no animation)
+/// cmd.spawn(
+///     AseTexture::new(server.load("icons.aseprite"))
+///         .with_slice("ghost_red")
+///         .sprite(),
+/// );
 /// # }
 /// ```
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug)]
 #[require(Visibility)]
 #[require(InheritedVisibility)]
-pub struct AseLayeredAnimation {
-    pub animation: Animation,
+pub struct AseTexture {
     pub aseprite: Handle<Aseprite>,
     pub layers: LayerFilter,
+    pub slice: Option<SliceId>,
+    pub baked: bool,
     pub render_target: RenderTarget,
 }
 
-/// Spawns a child [`AseSlice`] per layer for full composition control.
-///
-/// Each child entity gets [`ChildOf`], [`SpriteLayerOf`], [`LayerId`], and
-/// the appropriate render component. Works identically to
-/// [`AseLayeredAnimation`] but for static slices.
-///
-/// ```rust,no_run
-/// # use bevy::prelude::*;
-/// # use bevy_aseprite_ultra::prelude::*;
-/// # fn example(mut cmd: Commands, server: Res<AssetServer>) {
-/// cmd.spawn(AseLayeredSlice {
-///     name: "ghost_red".into(),
-///     aseprite: server.load("icons.aseprite"),
-///     layers: LayerFilter::All,
-///     render_target: RenderTarget::Sprite,
-/// });
-/// # }
-/// ```
-#[derive(Component, Clone)]
-#[require(Visibility)]
-#[require(InheritedVisibility)]
-pub struct AseLayeredSlice {
-    pub name: String,
-    pub aseprite: Handle<Aseprite>,
-    pub layers: LayerFilter,
-    pub render_target: RenderTarget,
+impl AseTexture {
+    /// Layered mode (default). Spawns one child per visible layer.
+    pub fn new(aseprite: Handle<Aseprite>) -> Self {
+        AseTexture {
+            aseprite,
+            layers: LayerFilter::Visible,
+            slice: None,
+            baked: false,
+            render_target: RenderTarget::Sprite,
+        }
+    }
+
+    /// Baked mode. Spawns a single composite child.
+    pub fn baked(aseprite: Handle<Aseprite>) -> Self {
+        AseTexture {
+            aseprite,
+            layers: LayerFilter::Visible,
+            slice: None,
+            baked: true,
+            render_target: RenderTarget::Sprite,
+        }
+    }
+
+    /// Set the slice name. Enables slice-based rendering.
+    pub fn with_slice(mut self, name: &str) -> Self {
+        self.slice = Some(SliceId::new(name));
+        self
+    }
+
+    /// Set the layer filter.
+    pub fn with_layers(mut self, layers: LayerFilter) -> Self {
+        self.layers = layers;
+        self
+    }
+
+    /// Set the render target.
+    pub fn with_render_target(mut self, target: RenderTarget) -> Self {
+        self.render_target = target;
+        self
+    }
+
+    /// Use [`Sprite`] as the render target (2D world).
+    pub fn sprite(mut self) -> Self {
+        self.render_target = RenderTarget::Sprite;
+        self
+    }
+
+    /// Use [`ImageNode`] as the render target (UI).
+    pub fn ui(mut self) -> Self {
+        self.render_target = RenderTarget::Ui;
+        self
+    }
 }
+
+/// Flip state that propagates to all child render entities.
+///
+/// Place on the parent entity alongside [`AseTexture`].
+#[derive(Component, Default, Reflect, Clone, Debug)]
+#[reflect]
+pub struct AseFlip {
+    pub x: bool,
+    pub y: bool,
+}
+
+// ---- systems ----
 
 fn matching_layers(aseprite: &Aseprite, filter: &LayerFilter) -> Vec<LayerId> {
     match filter {
@@ -151,220 +199,215 @@ fn matching_layers(aseprite: &Aseprite, filter: &LayerFilter) -> Vec<LayerId> {
     }
 }
 
-fn spawn_animation_layers(
+/// Spawns child entities for newly added [`AseTexture`] components.
+fn spawn_layers(
     mut cmd: Commands,
-    query: Query<(Entity, &AseLayeredAnimation), Without<SpriteLayers>>,
+    query: Query<(Entity, &AseTexture, Has<AseAnimation>), Without<SpriteLayers>>,
     assets: Res<Assets<Aseprite>>,
     server: Res<AssetServer>,
 ) {
-    for (entity, comp) in &query {
-        let Some(aseprite) = assets.get(&comp.aseprite) else {
+    for (entity, tex, has_anim) in &query {
+        let Some(aseprite) = assets.get(&tex.aseprite) else {
             continue;
         };
 
-        let layers = matching_layers(aseprite, &comp.layers);
-        spawn_animation_children(&mut cmd, &server, entity, aseprite, &comp.animation, &layers, &comp.render_target);
+        spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim);
     }
 }
 
-fn spawn_slice_layers(
-    mut cmd: Commands,
-    query: Query<(Entity, &AseLayeredSlice), Without<SpriteLayers>>,
-    assets: Res<Assets<Aseprite>>,
-    server: Res<AssetServer>,
-) {
-    for (entity, comp) in &query {
-        let Some(aseprite) = assets.get(&comp.aseprite) else {
-            continue;
-        };
-
-        let layers = matching_layers(aseprite, &comp.layers);
-        spawn_slice_children(&mut cmd, &server, entity, aseprite, &comp.name, &layers, &comp.render_target);
-    }
-}
-
-/// When `AseAnimationLayers` changes, diff children: despawn removed layers, spawn added ones.
-fn update_animation_layers(
+/// Diffs children when [`AseTexture`] changes.
+fn update_layers(
     mut cmd: Commands,
     query: Query<
-        (Entity, &AseLayeredAnimation, &SpriteLayers),
-        Changed<AseLayeredAnimation>,
+        (Entity, &AseTexture, Has<AseAnimation>, &SpriteLayers),
+        Changed<AseTexture>,
     >,
     layer_ids: Query<&LayerId, With<SpriteLayerOf>>,
     assets: Res<Assets<Aseprite>>,
     server: Res<AssetServer>,
 ) {
-    for (entity, comp, sprite_layers) in &query {
-        let Some(aseprite) = assets.get(&comp.aseprite) else {
+    for (entity, tex, has_anim, sprite_layers) in &query {
+        let Some(aseprite) = assets.get(&tex.aseprite) else {
             continue;
         };
 
-        let desired = matching_layers(aseprite, &comp.layers);
+        if tex.baked {
+            for child in sprite_layers.iter() {
+                cmd.entity(child).despawn();
+            }
+            spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim);
+        } else {
+            let desired = matching_layers(aseprite, &tex.layers);
 
-        // Collect existing layer IDs and despawn children not in the desired set.
-        let mut existing: Vec<LayerId> = Vec::new();
-        for child in sprite_layers.iter() {
-            if let Ok(id) = layer_ids.get(child) {
-                if desired.contains(id) {
-                    existing.push(*id);
+            let mut existing: Vec<LayerId> = Vec::new();
+            let mut has_non_layer_children = false;
+            for child in sprite_layers.iter() {
+                if let Ok(id) = layer_ids.get(child) {
+                    if desired.contains(id) {
+                        existing.push(*id);
+                    } else {
+                        cmd.entity(child).despawn();
+                    }
                 } else {
                     cmd.entity(child).despawn();
+                    has_non_layer_children = true;
                 }
             }
-        }
 
-        // Spawn layers that don't exist yet.
-        let to_spawn: Vec<LayerId> = desired
-            .into_iter()
-            .filter(|id| !existing.contains(id))
-            .collect();
+            if has_non_layer_children {
+                spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim);
+            } else {
+                let to_spawn: Vec<LayerId> = desired
+                    .into_iter()
+                    .filter(|id| !existing.contains(id))
+                    .collect();
 
-        if !to_spawn.is_empty() {
-            spawn_animation_children(
-                &mut cmd,
-                &server,
-                entity,
-                aseprite,
-                &comp.animation,
-                &to_spawn,
-                &comp.render_target,
-            );
+                if !to_spawn.is_empty() {
+                    spawn_layered_children(
+                        &mut cmd, &server, entity, aseprite, tex, has_anim, &to_spawn,
+                    );
+                }
+            }
         }
     }
 }
 
-/// When `AseSliceLayers` changes, diff children: despawn removed layers, spawn added ones.
-fn update_slice_layers(
-    mut cmd: Commands,
-    query: Query<
-        (Entity, &AseLayeredSlice, &SpriteLayers),
-        Changed<AseLayeredSlice>,
-    >,
-    layer_ids: Query<&LayerId, With<SpriteLayerOf>>,
-    assets: Res<Assets<Aseprite>>,
-    server: Res<AssetServer>,
+/// Propagates [`AseFlip`] to children's [`Sprite`] and [`ImageNode`].
+fn propagate_flip(
+    parents: Query<(&AseFlip, &SpriteLayers), Changed<AseFlip>>,
+    mut sprites: Query<&mut Sprite>,
+    mut image_nodes: Query<&mut ImageNode>,
 ) {
-    for (entity, comp, sprite_layers) in &query {
-        let Some(aseprite) = assets.get(&comp.aseprite) else {
-            continue;
-        };
-
-        let desired = matching_layers(aseprite, &comp.layers);
-
-        let mut existing: Vec<LayerId> = Vec::new();
-        for child in sprite_layers.iter() {
-            if let Ok(id) = layer_ids.get(child) {
-                if desired.contains(id) {
-                    existing.push(*id);
-                } else {
-                    cmd.entity(child).despawn();
-                }
+    for (flip, layers) in &parents {
+        for child in layers.iter() {
+            if let Ok(mut sprite) = sprites.get_mut(child) {
+                sprite.flip_x = flip.x;
+                sprite.flip_y = flip.y;
             }
-        }
-
-        let to_spawn: Vec<LayerId> = desired
-            .into_iter()
-            .filter(|id| !existing.contains(id))
-            .collect();
-
-        if !to_spawn.is_empty() {
-            spawn_slice_children(
-                &mut cmd,
-                &server,
-                entity,
-                aseprite,
-                &comp.name,
-                &to_spawn,
-                &comp.render_target,
-            );
+            if let Ok(mut node) = image_nodes.get_mut(child) {
+                node.flip_x = flip.x;
+                node.flip_y = flip.y;
+            }
         }
     }
 }
 
 // ---- helpers ----
 
-fn spawn_animation_children(
+fn spawn_children(
     cmd: &mut Commands,
     server: &AssetServer,
     parent: Entity,
     aseprite: &Aseprite,
-    animation: &Animation,
-    layers: &[LayerId],
-    render_target: &RenderTarget,
+    tex: &AseTexture,
+    has_anim: bool,
 ) {
-    for (z, layer_id) in layers.iter().enumerate() {
-        let layer_path = format!("{}#{}", aseprite.source_path, layer_id.as_str());
-        let ase_animation = AseAnimation {
-            animation: animation.clone(),
-            aseprite: server.load(&layer_path),
-        };
-        let common = (
-            ChildOf(parent),
-            SpriteLayerOf(parent),
-            *layer_id,
-            Name::new(layer_id.as_str().to_owned()),
-        );
-        match render_target {
-            RenderTarget::Sprite => {
-                cmd.spawn((
-                    common,
-                    ase_animation,
-                    Sprite::default(),
-                    Transform::from_translation(Vec3::new(0., 0., z as f32 * 0.001)),
+    if tex.baked {
+        spawn_baked_child(cmd, parent, tex, has_anim);
+    } else {
+        let layers = matching_layers(aseprite, &tex.layers);
+        spawn_layered_children(cmd, server, parent, aseprite, tex, has_anim, &layers);
+    }
+}
+
+fn spawn_baked_child(
+    cmd: &mut Commands,
+    parent: Entity,
+    tex: &AseTexture,
+    has_anim: bool,
+) {
+    let common = (
+        ChildOf(parent),
+        SpriteLayerOf(parent),
+        Name::new("baked"),
+    );
+
+    match &tex.render_target {
+        RenderTarget::Sprite => {
+            let mut entity_cmd = cmd.spawn((common, Sprite::default()));
+            if has_anim {
+                entity_cmd.insert((
+                    AnimationLayer::new(tex.aseprite.clone()),
+                    AnimationState::default(),
                 ));
             }
-            RenderTarget::Ui => {
-                cmd.spawn((
-                    common,
-                    ase_animation,
-                    ImageNode::default(),
-                    Node {
-                        position_type: PositionType::Absolute,
-                        width: Val::Percent(100.),
-                        height: Val::Percent(100.),
-                        ..default()
-                    },
-                    ZIndex(z as i32),
+            if let Some(slice_id) = &tex.slice {
+                entity_cmd.insert(AseSlice {
+                    name: slice_id.as_str().to_owned(),
+                    aseprite: tex.aseprite.clone(),
+                });
+            }
+        }
+        RenderTarget::Ui => {
+            let mut entity_cmd = cmd.spawn((
+                common,
+                ImageNode::default(),
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.),
+                    height: Val::Percent(100.),
+                    ..default()
+                },
+            ));
+            if has_anim {
+                entity_cmd.insert((
+                    AnimationLayer::new(tex.aseprite.clone()),
+                    AnimationState::default(),
                 ));
+            }
+            if let Some(slice_id) = &tex.slice {
+                entity_cmd.insert(AseSlice {
+                    name: slice_id.as_str().to_owned(),
+                    aseprite: tex.aseprite.clone(),
+                });
             }
         }
     }
 }
 
-fn spawn_slice_children(
+fn spawn_layered_children(
     cmd: &mut Commands,
     server: &AssetServer,
     parent: Entity,
     aseprite: &Aseprite,
-    slice_name: &str,
+    tex: &AseTexture,
+    has_anim: bool,
     layers: &[LayerId],
-    render_target: &RenderTarget,
 ) {
     for (z, layer_id) in layers.iter().enumerate() {
         let layer_path = format!("{}#{}", aseprite.source_path, layer_id.as_str());
-        let ase_slice = AseSlice {
-            name: slice_name.to_owned(),
-            aseprite: server.load(&layer_path),
-        };
+        let layer_handle: Handle<Aseprite> = server.load(&layer_path);
+
         let common = (
             ChildOf(parent),
             SpriteLayerOf(parent),
             *layer_id,
             Name::new(layer_id.as_str().to_owned()),
         );
-        match render_target {
+
+        match &tex.render_target {
             RenderTarget::Sprite => {
-                cmd.spawn((
+                let mut entity_cmd = cmd.spawn((
                     common,
-                    ase_slice,
                     Sprite::default(),
                     Transform::from_translation(Vec3::new(0., 0., z as f32 * 0.001)),
                 ));
+                if has_anim {
+                    entity_cmd.insert((
+                        AnimationLayer::new(layer_handle.clone()),
+                        AnimationState::default(),
+                    ));
+                }
+                if let Some(slice_id) = &tex.slice {
+                    entity_cmd.insert(AseSlice {
+                        name: slice_id.as_str().to_owned(),
+                        aseprite: layer_handle,
+                    });
+                }
             }
             RenderTarget::Ui => {
-                cmd.spawn((
+                let mut entity_cmd = cmd.spawn((
                     common,
-                    ase_slice,
                     ImageNode::default(),
                     Node {
                         position_type: PositionType::Absolute,
@@ -374,6 +417,18 @@ fn spawn_slice_children(
                     },
                     ZIndex(z as i32),
                 ));
+                if has_anim {
+                    entity_cmd.insert((
+                        AnimationLayer::new(layer_handle.clone()),
+                        AnimationState::default(),
+                    ));
+                }
+                if let Some(slice_id) = &tex.slice {
+                    entity_cmd.insert(AseSlice {
+                        name: slice_id.as_str().to_owned(),
+                        aseprite: layer_handle,
+                    });
+                }
             }
         }
     }

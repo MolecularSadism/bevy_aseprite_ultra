@@ -31,6 +31,7 @@ rendering, and custom materials.
 - One-shot animations with finish events
 - Static sprites via slices — use aseprite for icons, UI, and more
 - **Layered rendering** — spawn per-layer children for full composition control
+- **Baked rendering** — single composite child for simpler use cases
 - Render to custom materials and write shaders on top
 - Optional asset processor for production builds
 
@@ -53,61 +54,154 @@ fn main() {
 fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn(Camera2d);
 
-    // Sprite animation
-    cmd.spawn(AseAnimation::sprite(
-        Animation::tag("walk-right"),
-        server.load("player.aseprite"),
+    // Animated sprite (layered — one child per visible layer)
+    cmd.spawn((
+        AseTexture::new(server.load("player.aseprite")).sprite(),
+        AseAnimation::tag("walk-right"),
     ));
 
-    // UI animation
-    cmd.spawn(AseAnimation::ui(
-        Animation::tag("walk-right"),
-        server.load("player.aseprite"),
+    // Animated sprite (baked — single composite child)
+    cmd.spawn((
+        AseTexture::baked(server.load("player.aseprite")).sprite(),
+        AseAnimation::tag("idle"),
     ));
 
-    // Static sprite from a named slice
-    cmd.spawn(AseSlice::sprite(
-        server.load("icons.aseprite"),
-        "ghost_red",
-    ));
-
-    // Static UI slice
-    cmd.spawn(AseSlice::ui(
-        server.load("icons.aseprite"),
-        "ghost_red",
-    ));
+    // Static slice (no animation component needed)
+    cmd.spawn(
+        AseTexture::baked(server.load("icons.aseprite"))
+            .with_slice("ghost_red")
+            .sprite(),
+    );
 }
 ```
 
+## Core Concepts
+
+`AseTexture` is the primary component. It always spawns child entities for
+rendering — the parent entity itself does not render. Two modes are available:
+
+- **Layered** (`AseTexture::new`) — one child per layer, for full composition control
+- **Baked** (`AseTexture::baked`) — single composite child, simpler and cheaper
+
+Add `AseAnimation` alongside `AseTexture` to enable animation. Without it,
+children are fully static with zero per-tick overhead.
+
+## Entity Hierarchy
+
+`AseTexture` uses a parent-child model built on Bevy's relationship system.
+The parent entity holds `AseTexture` (and optionally `AseAnimation`) but never
+renders directly. Instead, the plugin spawns child entities that carry the
+actual render components (`Sprite` or `ImageNode`).
+
+```text
+[Parent Entity]
+  ├─ AseTexture         (config: asset handle, mode, layers, slice, render target)
+  ├─ AseAnimation       (optional: tag, speed, repeat, direction, queue)
+  ├─ AnimationState     (auto-added when AseAnimation is present)
+  ├─ AseFlip            (optional: propagated to children)
+  ├─ SpriteLayers       (auto-populated: tracks child entities)
+  │
+  ├── [Child: "body"]
+  │     ├─ SpriteLayerOf(parent)   ── relationship back to parent
+  │     ├─ LayerId("body")         ── type-safe interned layer name
+  │     ├─ AnimationLayer          ── per-layer asset handle
+  │     ├─ AnimationState          ── frame state (propagated from parent)
+  │     ├─ Sprite / ImageNode      ── render component
+  │     └─ AseSlice                ── (if slice configured)
+  │
+  └── [Child: "armor"]
+        ├─ SpriteLayerOf(parent)
+        ├─ LayerId("armor")
+        └─ ...
+```
+
+### Relationships
+
+The hierarchy is wired via a custom Bevy relationship pair:
+
+- **`SpriteLayerOf(Entity)`** — placed on each child, points back to the parent
+- **`SpriteLayers`** — auto-populated on the parent, collects all child entities
+
+This lets you query children through the parent or find the parent from any child:
+
+```rust
+# use bevy::prelude::*;
+# use bevy_aseprite_ultra::prelude::*;
+// Query children from parent
+fn read_layers(query: Query<&SpriteLayers>) {
+    for layers in &query {
+        for child_entity in layers.iter() {
+            // ...
+        }
+    }
+}
+
+// Query parent from child
+fn find_parent(query: Query<&SpriteLayerOf>) {
+    for layer_of in &query {
+        let parent_entity = layer_of.0;
+        // ...
+    }
+}
+```
+
+### Baked vs Layered Children
+
+In **baked** mode, a single child named `"baked"` is spawned. It uses the
+composite asset handle (all visible layers flattened into one texture).
+
+In **layered** mode, one child per matching layer is spawned. Each child loads
+its own sub-asset (`"file.aseprite#Layer Name"`) and gets a `LayerId` component.
+Sprite children are z-ordered via small `Transform` offsets (`z * 0.001`).
+UI children use `ZIndex` instead.
+
+### Frame Propagation
+
+Animation ticking runs once on the parent entity. The resulting `AnimationState`
+is then propagated to all children via the `propagate_frame` system — children
+never tick independently. This means you query and control animation on the
+parent, while children just reflect the current frame.
+
 ## Animations
 
-```rust,no_run
+```rust
 # use bevy::prelude::*;
 # use bevy_aseprite_ultra::prelude::*;
 # fn example(mut cmd: Commands, server: Res<AssetServer>) {
 cmd.spawn((
-    AseAnimation {
-        aseprite: server.load("player.aseprite"),
-        animation: Animation::tag("walk-right")
-            .with_speed(2.0)
-            .with_repeat(AnimationRepeat::Count(3))
-            .with_direction(AnimationDirection::PingPong)
-            // chain animations — loop animations never finish
-            .with_then("idle", AnimationRepeat::Loop),
-    },
-    Sprite {
-        flip_x: true,
-        ..default()
-    },
+    AseTexture::baked(server.load("player.aseprite")).sprite(),
+    AseAnimation::tag("walk-right")
+        .with_speed(2.0)
+        .with_repeat(AnimationRepeat::Count(3))
+        .with_direction(AnimationDirection::PingPong)
+        // chain animations — loop animations never finish
+        .with_then("idle", AnimationRepeat::Loop),
 ));
 # }
+```
+
+### Imperative Animation Control
+
+```rust
+# use bevy::prelude::*;
+# use bevy_aseprite_ultra::prelude::*;
+fn switch_animation(mut query: Query<&mut AseAnimation>) {
+    for mut anim in &mut query {
+        anim.play_loop("run");       // start looping immediately
+        // anim.play("attack", AnimationRepeat::Count(1));
+        // anim.then("idle", AnimationRepeat::Loop);  // queue next
+        // anim.pause();
+        // anim.start();
+        // anim.stop();
+    }
+}
 ```
 
 ### Animation Events
 
 Listen for one-shot animation completions or loop cycles:
 
-```rust,no_run
+```rust
 # use bevy::prelude::*;
 # use bevy_aseprite_ultra::prelude::*;
 fn despawn_on_finish(mut events: MessageReader<AnimationEvents>, mut cmd: Commands) {
@@ -122,55 +216,93 @@ fn despawn_on_finish(mut events: MessageReader<AnimationEvents>, mut cmd: Comman
 }
 ```
 
-## Slices
+### Manual Frame Control
 
-```rust,no_run
+Disable automatic ticking with `ManualTick` and advance frames yourself:
+
+```rust
 # use bevy::prelude::*;
 # use bevy_aseprite_ultra::prelude::*;
 # fn example(mut cmd: Commands, server: Res<AssetServer>) {
-cmd.spawn(AseSlice::sprite(
-    server.load("icons.aseprite"),
-    "ghost_red",
+cmd.spawn((
+    AseTexture::baked(server.load("player.aseprite")).sprite(),
+    AseAnimation::tag("walk-right"),
+    ManualTick,
 ));
 # }
+
+# fn advance(mut cmd: Commands, query: Query<Entity, With<ManualTick>>) {
+// Trigger to advance one frame:
+for entity in &query {
+    cmd.trigger(NextFrameEvent(entity));
+}
+# }
+```
+
+## Slices
+
+Static sprite regions from named slices. Supports pivot offsets and 9-patch data.
+
+```rust
+# use bevy::prelude::*;
+# use bevy_aseprite_ultra::prelude::*;
+# fn example(mut cmd: Commands, server: Res<AssetServer>) {
+cmd.spawn(
+    AseTexture::baked(server.load("icons.aseprite"))
+        .with_slice("ghost_red")
+        .sprite(),
+);
+# }
+```
+
+### Runtime Slice Switching
+
+Mutate `AseTexture` to switch slices at runtime:
+
+```rust
+# use bevy::prelude::*;
+# use bevy_aseprite_ultra::prelude::*;
+fn cycle_slices(mut query: Query<&mut AseTexture>) {
+    for mut tex in &mut query {
+        tex.slice = Some(SliceId::new("ghost_blue"));
+    }
+}
 ```
 
 ## Layered Rendering
 
-Spawn per-layer children with `AseLayeredAnimation` or `AseLayeredSlice`.
-Each layer becomes a separate child entity with its own `Sprite` (or `ImageNode`),
-allowing independent visibility control and composition.
+Use `AseTexture::new` for per-layer children. Each layer becomes a separate
+child entity with its own `Sprite` (or `ImageNode`), allowing independent
+visibility control and composition.
 
-```rust,no_run
+```rust
 # use bevy::prelude::*;
 # use bevy_aseprite_ultra::prelude::*;
 # fn example(mut cmd: Commands, server: Res<AssetServer>) {
-// All visible layers as separate children
-cmd.spawn(AseLayeredAnimation {
-    animation: Animation::tag("idle"),
-    aseprite: server.load("character.aseprite"),
-    layers: LayerFilter::Visible,
-    render_target: RenderTarget::Sprite,
-});
+// All visible layers as separate children (default)
+cmd.spawn((
+    AseTexture::new(server.load("character.aseprite")).sprite(),
+    AseAnimation::tag("idle"),
+));
 
 // Only specific layers
-cmd.spawn(AseLayeredAnimation {
-    animation: Animation::tag("idle"),
-    aseprite: server.load("character.aseprite"),
-    layers: LayerFilter::Include(vec![
-        LayerId::new("body"),
-        LayerId::new("armor"),
-    ]),
-    render_target: RenderTarget::Sprite,
-});
+cmd.spawn((
+    AseTexture::new(server.load("character.aseprite"))
+        .with_layers(LayerFilter::Include(vec![
+            LayerId::new("body"),
+            LayerId::new("armor"),
+        ]))
+        .sprite(),
+    AseAnimation::tag("idle"),
+));
 
 // Layered slices work the same way
-cmd.spawn(AseLayeredSlice {
-    name: "ghost_red".into(),
-    aseprite: server.load("icons.aseprite"),
-    layers: LayerFilter::All,
-    render_target: RenderTarget::Sprite,
-});
+cmd.spawn(
+    AseTexture::new(server.load("icons.aseprite"))
+        .with_layers(LayerFilter::All)
+        .with_slice("ghost_red")
+        .sprite(),
+);
 # }
 ```
 
@@ -180,15 +312,32 @@ Mutating the `layers` field at runtime diffs existing children — only
 changed layers are spawned or despawned. You can also toggle individual
 layer visibility via the `Visibility` component on child entities:
 
-```rust,no_run
+```rust
 # use bevy::prelude::*;
 # use bevy_aseprite_ultra::prelude::*;
 fn toggle_armor(
-    mut query: Query<&SpriteLayers>,
+    query: Query<&SpriteLayers>,
     children_query: Query<(&LayerId, &mut Visibility)>,
 ) {
     // each child has a LayerId you can match against
 }
+```
+
+### Flipping
+
+Use `AseFlip` to flip all child render entities. The flip state propagates
+to all children's `Sprite` or `ImageNode` components automatically:
+
+```rust
+# use bevy::prelude::*;
+# use bevy_aseprite_ultra::prelude::*;
+# fn example(mut cmd: Commands, server: Res<AssetServer>) {
+cmd.spawn((
+    AseTexture::baked(server.load("player.aseprite")).sprite(),
+    AseAnimation::tag("walk-right"),
+    AseFlip { x: true, y: false },
+));
+# }
 ```
 
 ### Sub-Asset Labels
@@ -199,7 +348,7 @@ Load specific layer composites directly via asset labels:
 - `"file.aseprite#all"` — all layers including hidden ones
 - `"file.aseprite#Layer Name"` — a single named layer
 
-```rust,no_run
+```rust
 # use bevy::prelude::*;
 # use bevy_aseprite_ultra::prelude::*;
 # fn example(server: Res<AssetServer>) {
@@ -211,20 +360,21 @@ let body: Handle<Aseprite> = server.load("player.aseprite#body");
 
 ## Bevy UI
 
-Use animations and slices in Bevy UI with `ImageNode`:
+Use `.ui()` instead of `.sprite()` to render as `ImageNode` in Bevy UI:
 
-```rust,no_run
+```rust
 # use bevy::prelude::*;
 # use bevy_aseprite_ultra::prelude::*;
 # fn example(mut cmd: Commands, server: Res<AssetServer>) {
 // UI animation
 cmd.spawn((
-    Button,
-    ImageNode::default(),
-    AseAnimation {
-        aseprite: server.load("player.aseprite"),
-        animation: Animation::tag("walk-right"),
+    Node {
+        width: Val::Px(100.),
+        height: Val::Px(100.),
+        ..default()
     },
+    AseTexture::baked(server.load("player.aseprite")).ui(),
+    AseAnimation::tag("walk-right"),
 ));
 
 // UI slice
@@ -234,21 +384,41 @@ cmd.spawn((
         height: Val::Px(100.),
         ..default()
     },
-    ImageNode::default(),
-    AseSlice {
-        name: "ghost_red".into(),
-        aseprite: server.load("icons.aseprite"),
-    },
+    AseTexture::baked(server.load("icons.aseprite"))
+        .with_slice("ghost_red")
+        .ui(),
 ));
 
 // Layered UI animation
-cmd.spawn(AseLayeredAnimation {
-    animation: Animation::tag("idle"),
-    aseprite: server.load("character.aseprite"),
-    layers: LayerFilter::Visible,
-    render_target: RenderTarget::Ui,
-});
+cmd.spawn((
+    Node {
+        width: Val::Px(100.),
+        height: Val::Px(100.),
+        ..default()
+    },
+    AseTexture::new(server.load("character.aseprite")).ui(),
+    AseAnimation::tag("idle"),
+));
 # }
+```
+
+## Custom Materials
+
+Implement `RenderAnimation` or `RenderSlice` on your material to drive
+custom shaders with aseprite data:
+
+```rust,ignore
+impl RenderAnimation for MyMaterial {
+    type Extra<'e> = (Res<'e, Time>, Res<'e, Assets<TextureAtlasLayout>>);
+    fn render_animation(
+        &mut self,
+        aseprite: &Aseprite,
+        state: &AnimationState,
+        extra: &mut Self::Extra<'_>,
+    ) {
+        // custom rendering logic
+    }
+}
 ```
 
 ## Examples
@@ -275,18 +445,27 @@ cargo run --example asset_processing --features asset_processing
 
 ## Asset Processing
 
-Enable asset processing for production builds:
+Simply enable asset processing in your `AssetPlugin` like so:
 
 ```rust,no_run
-# use bevy::prelude::*;
-# use bevy_aseprite_ultra::prelude::*;
-App::new()
-    .add_plugins(DefaultPlugins.set(AssetPlugin {
-        mode: AssetMode::Processed,
-        ..Default::default()
-    }))
-    .add_plugins(AsepriteUltraPlugin)
-    .run();
+use bevy::prelude::*;
+use bevy_aseprite_ultra::prelude::*;
+
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins.set(AssetPlugin {
+            mode: AssetMode::Processed,
+            ..Default::default()
+        }))
+        .add_plugins(AsepriteUltraPlugin)
+        .run();
+}
 ```
 
-Run with `cargo run --features asset_processing`.
+Then run with the `asset_processing` feature enabled:
+
+```bash
+cargo run --features asset_processing
+```
+
+Then load your aseprite files in code as usual!

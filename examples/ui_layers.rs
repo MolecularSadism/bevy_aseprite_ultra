@@ -60,7 +60,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
         ))
         .id();
 
-    // ---- Baked AseAnimation group ----
+    // ---- Baked AseTexture group ----
     let baked_group = cmd
         .spawn((
             Node {
@@ -77,18 +77,17 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
         ))
         .id();
 
-    // Layer 1 only via sub-asset label
+    // Layer 1 only via layer filter on baked texture
     cmd.spawn((
         Node {
             width: Val::Px(100.),
             height: Val::Px(100.),
             ..default()
         },
-        AseAnimation {
-            animation: Animation::default(),
-            aseprite: server.load("layers.aseprite#Layer 1"),
-        },
-        ImageNode::default(),
+        AseTexture::baked(server.load("layers.aseprite"))
+            .with_layers(LayerFilter::Include(vec![LayerId::new("Layer 1")]))
+            .ui(),
+        AseAnimation::default(),
         ChildOf(baked_group),
     ));
 
@@ -99,16 +98,13 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
             height: Val::Px(100.),
             ..default()
         },
-        AseAnimation {
-            animation: Animation::default(),
-            aseprite: server.load("layers.aseprite"),
-        },
-        ImageNode::default(),
+        AseTexture::baked(server.load("layers.aseprite")).ui(),
+        AseAnimation::default(),
         ChildOf(baked_group),
     ));
 
     cmd.spawn((
-        Text::new("Baked AseAnimation"),
+        Text::new("Baked AseTexture"),
         TextFont {
             font_size: 14.,
             ..default()
@@ -117,7 +113,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
         ChildOf(baked_group),
     ));
 
-    // ---- AseLayeredAnimation group ----
+    // ---- Layered AseTexture group ----
     let layered_group = cmd
         .spawn((
             Node {
@@ -141,12 +137,10 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
             height: Val::Px(100.),
             ..default()
         },
-        AseLayeredAnimation {
-            animation: Animation::default(),
-            aseprite: server.load("layers.aseprite"),
-            layers: LayerFilter::Include(vec![LayerId::new("Layer 1")]),
-            render_target: RenderTarget::Ui,
-        },
+        AseTexture::new(server.load("layers.aseprite"))
+            .with_layers(LayerFilter::Include(vec![LayerId::new("Layer 1")]))
+            .ui(),
+        AseAnimation::default(),
         DefaultFilter(LayerFilter::Include(vec![LayerId::new("Layer 1")])),
         ChildOf(layered_group),
     ));
@@ -158,15 +152,13 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
             height: Val::Px(100.),
             ..default()
         },
-        AseLayeredAnimation {
-            animation: Animation::default(),
-            aseprite: server.load("layers.aseprite"),
-            layers: LayerFilter::Include(vec![
+        AseTexture::new(server.load("layers.aseprite"))
+            .with_layers(LayerFilter::Include(vec![
                 LayerId::new("Layer 1"),
                 LayerId::new("Layer 2"),
-            ]),
-            render_target: RenderTarget::Ui,
-        },
+            ]))
+            .ui(),
+        AseAnimation::default(),
         DefaultFilter(LayerFilter::Include(vec![
             LayerId::new("Layer 1"),
             LayerId::new("Layer 2"),
@@ -181,18 +173,14 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
             height: Val::Px(100.),
             ..default()
         },
-        AseLayeredAnimation {
-            animation: Animation::default(),
-            aseprite: server.load("layers.aseprite"),
-            layers: LayerFilter::Visible,
-            render_target: RenderTarget::Ui,
-        },
+        AseTexture::new(server.load("layers.aseprite")).ui(),
+        AseAnimation::default(),
         DefaultFilter(LayerFilter::Visible),
         ChildOf(layered_group),
     ));
 
     cmd.spawn((
-        Text::new("AseLayeredAnimation"),
+        Text::new("Layered AseTexture"),
         TextFont {
             font_size: 14.,
             ..default()

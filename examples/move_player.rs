@@ -34,14 +34,12 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn((Camera2d, Transform::default().with_scale(Vec3::splat(0.15))));
 
     cmd.spawn((
-        AseAnimation {
-            animation: Animation::tag("walk-up")
-                .with_repeat(AnimationRepeat::Loop)
-                .with_direction(AnimationDirection::Forward)
-                .with_speed(2.0),
-            aseprite: server.load("player.aseprite"),
-        },
-        Sprite::default(),
+        AseTexture::baked(server.load("player.aseprite")).sprite(),
+        AseAnimation::tag("walk-up")
+            .with_repeat(AnimationRepeat::Loop)
+            .with_direction(AnimationDirection::Forward)
+            .with_speed(2.0),
+        AseFlip::default(),
         Transform::from_translation(Vec3::new(15., 0., 0.)),
         Player {
             walk_speed: 30.,
@@ -52,20 +50,20 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
 }
 
 fn player_animation(mut animation_query: Query<(&mut AseAnimation, &Player)>) {
-    for (mut ase_sprite_animation, player) in animation_query.iter_mut() {
+    for (mut ase_animation, player) in animation_query.iter_mut() {
         match player.state {
             PlayerState::Stand => {
-                ase_sprite_animation.animation.play_loop("idle");
+                ase_animation.play_loop("idle");
             }
             PlayerState::Walk => match player.direction {
                 PlayerDirection::Up => {
-                    ase_sprite_animation.animation.play_loop("walk-up");
+                    ase_animation.play_loop("walk-up");
                 }
                 PlayerDirection::Down => {
-                    ase_sprite_animation.animation.play_loop("walk-down");
+                    ase_animation.play_loop("walk-down");
                 }
                 PlayerDirection::Left | PlayerDirection::Right => {
-                    ase_sprite_animation.animation.play_loop("walk-right");
+                    ase_animation.play_loop("walk-right");
                 }
             },
         }
@@ -73,7 +71,7 @@ fn player_animation(mut animation_query: Query<(&mut AseAnimation, &Player)>) {
 }
 
 pub fn control_player(
-    mut query: Query<(&mut Transform, &mut Player), With<Player>>,
+    mut query: Query<(&mut Transform, &mut Player, &mut AseFlip), With<Player>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
 ) {
@@ -81,7 +79,7 @@ pub fn control_player(
         return;
     }
 
-    for (mut transform, mut player) in query.iter_mut() {
+    for (mut transform, mut player, mut flip) in query.iter_mut() {
         let mut pressed_flag: bool = false;
         if keyboard_input.pressed(KeyCode::KeyW) {
             transform.translation.y += player.walk_speed * time.delta_secs();
@@ -96,13 +94,13 @@ pub fn control_player(
         if keyboard_input.pressed(KeyCode::KeyA) {
             transform.translation.x -= player.walk_speed * time.delta_secs();
             player.direction = PlayerDirection::Left;
-            transform.scale.x = -1.;
+            flip.x = true;
             pressed_flag = true;
         }
         if keyboard_input.pressed(KeyCode::KeyD) {
             transform.translation.x += player.walk_speed * time.delta_secs();
             player.direction = PlayerDirection::Right;
-            transform.scale.x = 1.;
+            flip.x = false;
             pressed_flag = true;
         }
         if pressed_flag {

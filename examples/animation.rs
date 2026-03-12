@@ -16,82 +16,56 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn((Camera2d, Transform::default().with_scale(Vec3::splat(0.15))));
 
     cmd.spawn((
-        AseAnimation {
-            animation: Animation::tag("walk-right"),
-            aseprite: server.load("player.aseprite"),
-        },
-        Sprite::default(),
+        AseTexture::baked(server.load("player.aseprite")).sprite(),
+        AseAnimation::tag("walk-right"),
         Transform::from_translation(Vec3::new(15., 0., 0.)),
     ));
 
     cmd.spawn((
-        AseAnimation {
-            animation: Animation::tag("walk-up"),
-            aseprite: server.load("player.aseprite"),
-        },
-        Sprite::default(),
+        AseTexture::baked(server.load("player.aseprite")).sprite(),
+        AseAnimation::tag("walk-up"),
         Transform::from_translation(Vec3::new(0., 0., 0.)),
     ));
 
     cmd.spawn((
-        AseAnimation {
-            animation: Animation::tag("walk-down"),
-            aseprite: server.load("player.aseprite"),
-        },
-        Sprite::default(),
+        AseTexture::baked(server.load("player.aseprite")).sprite(),
+        AseAnimation::tag("walk-down"),
         Transform::from_translation(Vec3::new(-15., 0., 0.)),
     ));
 
     cmd.spawn((
-        AseAnimation {
-            animation: Animation::default()
-                .with_direction(AnimationDirection::Reverse)
-                .with_repeat(AnimationRepeat::Count(1)),
-            aseprite: server.load("player.aseprite"),
-        },
-        Sprite::default(),
+        AseTexture::baked(server.load("player.aseprite")).sprite(),
+        AseAnimation::default()
+            .with_direction(AnimationDirection::Reverse)
+            .with_repeat(AnimationRepeat::Count(1)),
         Transform::from_translation(Vec3::new(0., -20., 0.)),
     ));
 
     cmd.spawn((
-        AseAnimation {
-            animation: Animation::tag("walk-right"),
-            aseprite: server.load("player.aseprite"),
-        },
+        AseTexture::baked(server.load("player.aseprite")).sprite(),
+        AseAnimation::tag("walk-right"),
+        AseFlip { x: true, y: false },
         Transform::from_translation(Vec3::new(15., -20., 0.)),
-        Sprite {
-            flip_x: true,
-            ..default()
-        },
     ));
 
     cmd.spawn((
-        AseAnimation {
-            animation: Animation::default().with_tag("squash"),
-            aseprite: server.load("ball.aseprite"),
-        },
-        Sprite::default(),
+        AseTexture::baked(server.load("ball.aseprite")).sprite(),
+        AseAnimation::tag("squash"),
         Transform::from_translation(Vec3::new(0., 20., 0.)),
     ));
 
     cmd.spawn((
-        AseSlice {
-            name: "ghost_red".into(),
-            aseprite: server.load("ghost_slices.aseprite"),
-        },
-        Sprite::default(),
+        AseTexture::baked(server.load("ghost_slices.aseprite"))
+            .with_slice("ghost_red")
+            .sprite(),
         Transform::from_translation(Vec3::new(50., 0., 0.)),
     ));
 
     cmd.spawn((
-        AseSlice {
-            name: "ghost_blue".into(),
-            aseprite: server.load("ghost_slices.aseprite"),
-        },
-        Sprite {
-            flip_x: true,
-            ..default()
-        },
+        AseTexture::baked(server.load("ghost_slices.aseprite"))
+            .with_slice("ghost_blue")
+            .sprite(),
+        AseFlip { x: true, y: false },
         Transform::from_translation(Vec3::new(80., 0., 0.)),
     ));
 }

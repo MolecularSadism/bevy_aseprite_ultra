@@ -96,10 +96,11 @@ fn setup(
 ) {
     cmd.spawn((Camera2d, Transform::default().with_scale(Vec3::splat(0.15))));
     cmd.spawn((
-        AseAnimation {
+        AnimationLayer {
             aseprite: server.load("player.aseprite"),
-            animation: Animation::tag("walk-down"),
         },
+        AseAnimation::tag("walk-down"),
+        AnimationState::default(),
         Mesh2d(meshes.add(Mesh::from(Rectangle::from_size(Vec2::splat(100.0))))),
         MeshMaterial2d(materials.add(MyMaterial::default())),
         Transform {

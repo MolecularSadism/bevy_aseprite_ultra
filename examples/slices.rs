@@ -27,11 +27,9 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn((Camera2d, Transform::default().with_scale(Vec3::splat(0.1))));
 
     cmd.spawn((
-        AseSlice {
-            name: "ghost_red".into(),
-            aseprite: server.load("ghost_slices.aseprite"),
-        },
-        Sprite::default(),
+        AseTexture::baked(server.load("ghost_slices.aseprite"))
+            .with_slice("ghost_red")
+            .sprite(),
         Transform::from_translation(Vec3::new(0., 0., 0.))
             .with_rotation(Quat::from_rotation_z(0.2)),
         SliceCycle {
@@ -41,23 +39,19 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     ));
 
     cmd.spawn((
-        AseSlice {
-            name: "ghost_blue".into(),
-            aseprite: server.load("ghost_slices.aseprite"),
-        },
-        Sprite {
-            flip_x: true,
-            ..default()
-        },
+        AseTexture::baked(server.load("ghost_slices.aseprite"))
+            .with_slice("ghost_blue")
+            .sprite(),
+        AseFlip { x: true, y: false },
         Transform::from_translation(Vec3::new(32., 0., 0.)),
     ));
 }
 
-fn change_slice(mut slices: Query<(&mut AseSlice, &mut SliceCycle)>) {
-    slices.iter_mut().for_each(|(mut slice, mut cycle)| {
+fn change_slice(mut slices: Query<(&mut AseTexture, &mut SliceCycle)>) {
+    slices.iter_mut().for_each(|(mut tex, mut cycle)| {
         cycle.current += 1;
         let index = cycle.current % cycle.slices.len();
-        slice.name = cycle.slices[index].clone();
-        info!("slice changed to {}", slice.name);
+        tex.slice = Some(SliceId::new(&cycle.slices[index]));
+        info!("slice changed to {:?}", tex.slice);
     });
 }

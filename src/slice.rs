@@ -1,3 +1,4 @@
+use crate::animation::AnimationState;
 use crate::loader::{Aseprite, SliceMeta};
 use bevy::{
     ecs::component::Mutable, prelude::*, sprite::Anchor, sprite_render::Material2d, ui::UiSystems,
@@ -120,25 +121,12 @@ impl<M: Material + RenderSlice> RenderSlice for MeshMaterial3d<M> {
     }
 }
 
-/// Displays a static sprite from a named aseprite slice.
+/// Renders a named slice region from an aseprite asset.
 ///
-/// Slices are regions defined in the aseprite file. They support pivot
-/// offsets and 9-patch data for UI scaling.
-///
-/// Use [`AseSlice::new`] with [`AseBundled`](crate::AseBundled) methods
-/// to spawn with the appropriate render target:
-///
-/// ```rust,no_run
-/// # use bevy::prelude::*;
-/// # use bevy_aseprite_ultra::prelude::*;
-/// # fn example(mut cmd: Commands, server: Res<AssetServer>) {
-/// // Sprite slice (2D world)
-/// cmd.spawn(AseSlice::new(server.load("icons.aseprite"), "ghost_red").sprite());
-///
-/// // UI slice
-/// cmd.spawn(AseSlice::new(server.load("icons.aseprite"), "ghost_red").ui());
-/// # }
-/// ```
+/// Placed on child entities by [`AseTexture`](crate::layers::AseTexture) when
+/// a slice is configured. Supports pivot offsets and 9-patch data.
+/// When combined with [`AnimationLayer`](crate::animation::AnimationLayer),
+/// the slice can be animated (frame-specific slice keys).
 #[derive(Component, Reflect, Default, Debug, Clone)]
 #[reflect]
 pub struct AseSlice {
@@ -147,8 +135,7 @@ pub struct AseSlice {
 }
 
 impl AseSlice {
-    /// Create a new `AseSlice`. Pair with a render target via
-    /// [`AseBundled`](crate::AseBundled) methods (`.sprite()`, `.ui()`, etc.).
+    /// Create a new `AseSlice`.
     pub fn new(aseprite: Handle<Aseprite>, name: impl Into<String>) -> Self {
         AseSlice {
             name: name.into(),
@@ -158,13 +145,13 @@ impl AseSlice {
 }
 
 pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
-    mut slices: Query<(&mut T, Ref<AseSlice>, Option<&mut Anchor>)>,
+    mut slices: Query<(&mut T, Ref<AseSlice>, Option<&AnimationState>, Option<&mut Anchor>)>,
     aseprites: Res<Assets<Aseprite>>,
     mut extra: <T as RenderSlice>::Extra<'_>,
 ) {
     let asset_change = aseprites.is_changed();
 
-    for (mut target, slice, maybe_anchor) in &mut slices {
+    for (mut target, slice, maybe_state, maybe_anchor) in &mut slices {
         if !asset_change && !slice.is_changed() {
             continue;
         }
@@ -176,10 +163,28 @@ pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
             continue;
         };
 
+        // For animated slices, use the frame-specific key if available.
+        let effective_meta = if let Some(state) = maybe_state {
+            let frame = usize::from(state.current_frame);
+            if let Some(key) = slice_meta.keys.iter().find(|k| k.frame == frame) {
+                &SliceMeta {
+                    rect: key.rect,
+                    atlas_id: slice_meta.atlas_id,
+                    pivot: key.pivot.or(slice_meta.pivot),
+                    nine_patch: key.nine_patch.or(slice_meta.nine_patch),
+                    keys: vec![],
+                }
+            } else {
+                slice_meta
+            }
+        } else {
+            slice_meta
+        };
+
         if let Some(mut anchor) = maybe_anchor {
-            *anchor = Anchor::from(slice_meta);
+            *anchor = Anchor::from(effective_meta);
         }
 
-        target.render_slice(aseprite, slice_meta, &mut extra);
+        target.render_slice(aseprite, effective_meta, &mut extra);
     }
 }

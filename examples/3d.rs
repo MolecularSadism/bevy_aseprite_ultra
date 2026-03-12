@@ -96,10 +96,11 @@ fn setup(
             .looking_at(vec3(0.0, 0.0, 0.0), Dir3::Y),
     ));
     cmd.spawn((
-        AseAnimation {
+        AnimationLayer {
             aseprite: server.load("player.aseprite"),
-            animation: Animation::tag("walk-down"),
         },
+        AseAnimation::tag("walk-down"),
+        AnimationState::default(),
         Transform {
             translation: vec3(-1.0, 0.0, 0.0),
             ..default()

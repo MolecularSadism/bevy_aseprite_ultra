@@ -51,11 +51,9 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
                 border: UiRect::all(Val::Px(5.)),
                 ..default()
             },
-            AseSlice {
-                name: "ghost_red".into(),
-                aseprite: server.load("ghost_slices.aseprite"),
-            },
-            ImageNode::default(),
+            AseTexture::baked(server.load("ghost_slices.aseprite"))
+                .with_slice("ghost_red")
+                .ui(),
             SliceCycle {
                 current: 0,
                 slices: vec!["ghost_red".into(), "ghost_blue".into()],
@@ -72,22 +70,19 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
                 height: Val::Px(100.),
                 ..default()
             },
-            AseAnimation {
-                aseprite: server.load("player.aseprite").into(),
-                animation: Animation::default().with_tag("walk-right"),
-            },
-            ImageNode::default(),
+            AseTexture::baked(server.load("player.aseprite")).ui(),
+            AseAnimation::tag("walk-right"),
         ))
         .id();
 
     cmd.entity(div).add_child(animation);
 }
 
-fn change_slice(mut slices: Query<(&mut AseSlice, &mut SliceCycle)>) {
-    slices.iter_mut().for_each(|(mut slice, mut cycle)| {
+fn change_slice(mut slices: Query<(&mut AseTexture, &mut SliceCycle)>) {
+    slices.iter_mut().for_each(|(mut tex, mut cycle)| {
         cycle.current += 1;
         let index = cycle.current % cycle.slices.len();
-        slice.name = cycle.slices[index].clone();
-        info!("slice changed to {}", slice.name);
+        tex.slice = Some(SliceId::new(&cycle.slices[index]));
+        info!("slice changed to {:?}", tex.slice);
     });
 }

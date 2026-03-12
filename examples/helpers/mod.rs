@@ -63,8 +63,7 @@ fn toggle_layer(
     mut state: ResMut<LayerState>,
     parents: Query<&SpriteLayers>,
     mut layers: Query<(&LayerId, &mut Visibility), With<SpriteLayerOf>>,
-    mut layered_anims: Query<(&mut AseLayeredAnimation, &DefaultFilter), Without<AseLayeredSlice>>,
-    mut layered_slices: Query<(&mut AseLayeredSlice, &DefaultFilter), Without<AseLayeredAnimation>>,
+    mut textures: Query<(&mut AseTexture, &DefaultFilter)>,
     mut hint: Query<&mut Text, With<HintText>>,
 ) {
     if !keys.just_pressed(KeyCode::Space) {
@@ -78,11 +77,8 @@ fn toggle_layer(
     match *state {
         // Visibility-based states: restore original filters, toggle child visibility
         LayerState::AllVisible | LayerState::Layer1Hidden | LayerState::OnlyLayer1 => {
-            for (mut anim, default) in &mut layered_anims {
-                anim.layers = default.0.clone();
-            }
-            for (mut slice, default) in &mut layered_slices {
-                slice.layers = default.0.clone();
+            for (mut tex, default) in &mut textures {
+                tex.layers = default.0.clone();
             }
             for sprite_layers in &parents {
                 for layer_entity in sprite_layers.iter() {
@@ -95,19 +91,13 @@ fn toggle_layer(
         }
         // Mutation-based states: mutate the LayerFilter on the component
         LayerState::FilterVisible => {
-            for (mut anim, _) in &mut layered_anims {
-                anim.layers = LayerFilter::Visible;
-            }
-            for (mut slice, _) in &mut layered_slices {
-                slice.layers = LayerFilter::Visible;
+            for (mut tex, _) in &mut textures {
+                tex.layers = LayerFilter::Visible;
             }
         }
         LayerState::FilterOnlyLayer1 => {
-            for (mut anim, _) in &mut layered_anims {
-                anim.layers = LayerFilter::Include(vec![layer1]);
-            }
-            for (mut slice, _) in &mut layered_slices {
-                slice.layers = LayerFilter::Include(vec![layer1]);
+            for (mut tex, _) in &mut textures {
+                tex.layers = LayerFilter::Include(vec![layer1]);
             }
         }
     }

@@ -22,82 +22,70 @@ fn main() {
 fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn((Camera2d, Transform::default().with_scale(Vec3::splat(0.15))));
 
-    // ---- Baked AseSlice (left group) ----
+    // ---- Baked AseTexture (left group) ----
 
-    // Layer 1 only via sub-asset label
+    // Layer 1 only via layer filter on baked texture
     cmd.spawn((
-        AseSlice {
-            name: "Top".into(),
-            aseprite: server.load("sliced_layers.aseprite#Layer 1"),
-        },
-        Sprite::default(),
+        AseTexture::baked(server.load("sliced_layers.aseprite"))
+            .with_layers(LayerFilter::Include(vec![LayerId::new("Layer 1")]))
+            .with_slice("Top")
+            .sprite(),
         Transform::from_translation(Vec3::new(-22., 10., 0.)),
     ));
 
     cmd.spawn((
-        AseSlice {
-            name: "Bottom".into(),
-            aseprite: server.load("sliced_layers.aseprite#Layer 1"),
-        },
-        Sprite::default(),
+        AseTexture::baked(server.load("sliced_layers.aseprite"))
+            .with_layers(LayerFilter::Include(vec![LayerId::new("Layer 1")]))
+            .with_slice("Bottom")
+            .sprite(),
         Transform::from_translation(Vec3::new(-22., -10., 0.)),
     ));
 
     // All visible layers composed into one sprite (default)
     cmd.spawn((
-        AseSlice {
-            name: "Top".into(),
-            aseprite: server.load("sliced_layers.aseprite"),
-        },
-        Sprite::default(),
+        AseTexture::baked(server.load("sliced_layers.aseprite"))
+            .with_slice("Top")
+            .sprite(),
         Transform::from_translation(Vec3::new(-10., 10., 0.)),
     ));
 
     cmd.spawn((
-        AseSlice {
-            name: "Bottom".into(),
-            aseprite: server.load("sliced_layers.aseprite"),
-        },
-        Sprite::default(),
+        AseTexture::baked(server.load("sliced_layers.aseprite"))
+            .with_slice("Bottom")
+            .sprite(),
         Transform::from_translation(Vec3::new(-10., -10., 0.)),
     ));
 
-    // ---- AseLayeredSlice (right group) ----
+    // ---- Layered AseTexture (right group) ----
 
     // Layer 1 only
     cmd.spawn((
-        AseLayeredSlice {
-            name: "Top".into(),
-            aseprite: server.load("sliced_layers.aseprite"),
-            layers: LayerFilter::Include(vec![LayerId::new("Layer 1")]),
-            render_target: RenderTarget::Sprite,
-        },
+        AseTexture::new(server.load("sliced_layers.aseprite"))
+            .with_slice("Top")
+            .with_layers(LayerFilter::Include(vec![LayerId::new("Layer 1")]))
+            .sprite(),
         DefaultFilter(LayerFilter::Include(vec![LayerId::new("Layer 1")])),
         Transform::from_translation(Vec3::new(10., 10., 0.)),
     ));
 
     cmd.spawn((
-        AseLayeredSlice {
-            name: "Bottom".into(),
-            aseprite: server.load("sliced_layers.aseprite"),
-            layers: LayerFilter::Include(vec![LayerId::new("Layer 1")]),
-            render_target: RenderTarget::Sprite,
-        },
+        AseTexture::new(server.load("sliced_layers.aseprite"))
+            .with_slice("Bottom")
+            .with_layers(LayerFilter::Include(vec![LayerId::new("Layer 1")]))
+            .sprite(),
         DefaultFilter(LayerFilter::Include(vec![LayerId::new("Layer 1")])),
         Transform::from_translation(Vec3::new(10., -10., 0.)),
     ));
 
     // Layer 1 + Layer 2
     cmd.spawn((
-        AseLayeredSlice {
-            name: "Top".into(),
-            aseprite: server.load("sliced_layers.aseprite"),
-            layers: LayerFilter::Include(vec![
+        AseTexture::new(server.load("sliced_layers.aseprite"))
+            .with_slice("Top")
+            .with_layers(LayerFilter::Include(vec![
                 LayerId::new("Layer 1"),
                 LayerId::new("Layer 2"),
-            ]),
-            render_target: RenderTarget::Sprite,
-        },
+            ]))
+            .sprite(),
         DefaultFilter(LayerFilter::Include(vec![
             LayerId::new("Layer 1"),
             LayerId::new("Layer 2"),
@@ -106,15 +94,13 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     ));
 
     cmd.spawn((
-        AseLayeredSlice {
-            name: "Bottom".into(),
-            aseprite: server.load("sliced_layers.aseprite"),
-            layers: LayerFilter::Include(vec![
+        AseTexture::new(server.load("sliced_layers.aseprite"))
+            .with_slice("Bottom")
+            .with_layers(LayerFilter::Include(vec![
                 LayerId::new("Layer 1"),
                 LayerId::new("Layer 2"),
-            ]),
-            render_target: RenderTarget::Sprite,
-        },
+            ]))
+            .sprite(),
         DefaultFilter(LayerFilter::Include(vec![
             LayerId::new("Layer 1"),
             LayerId::new("Layer 2"),
@@ -124,23 +110,17 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
 
     // All visible layers (Layer 1 + 2 + 3)
     cmd.spawn((
-        AseLayeredSlice {
-            name: "Top".into(),
-            aseprite: server.load("sliced_layers.aseprite"),
-            layers: LayerFilter::Visible,
-            render_target: RenderTarget::Sprite,
-        },
+        AseTexture::new(server.load("sliced_layers.aseprite"))
+            .with_slice("Top")
+            .sprite(),
         DefaultFilter(LayerFilter::Visible),
         Transform::from_translation(Vec3::new(40., 10., 0.)),
     ));
 
     cmd.spawn((
-        AseLayeredSlice {
-            name: "Bottom".into(),
-            aseprite: server.load("sliced_layers.aseprite"),
-            layers: LayerFilter::Visible,
-            render_target: RenderTarget::Sprite,
-        },
+        AseTexture::new(server.load("sliced_layers.aseprite"))
+            .with_slice("Bottom")
+            .sprite(),
         DefaultFilter(LayerFilter::Visible),
         Transform::from_translation(Vec3::new(40., -10., 0.)),
     ));
@@ -166,7 +146,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
         })
         .with_children(|row| {
             row.spawn((
-                Text::new("Baked AseSlice"),
+                Text::new("Baked AseTexture"),
                 TextFont {
                     font_size: 16.,
                     ..default()
@@ -174,7 +154,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
                 TextColor(css::WHITE.into()),
             ));
             row.spawn((
-                Text::new("AseLayeredSlice"),
+                Text::new("Layered AseTexture"),
                 TextFont {
                     font_size: 16.,
                     ..default()
