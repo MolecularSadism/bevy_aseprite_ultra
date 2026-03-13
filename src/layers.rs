@@ -257,14 +257,33 @@ fn update_layers(
             if has_non_layer_children {
                 spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim, flip);
             } else {
+                // Update z-ordering on retained children.
+                for child in sprite_layers.iter() {
+                    if let Ok(id) = layer_ids.get(child) {
+                        if let Some(z) = desired.iter().position(|d| d == id) {
+                            match &tex.render_target {
+                                RenderTarget::Sprite => {
+                                    cmd.entity(child).insert(
+                                        Transform::from_translation(Vec3::new(0., 0., z as f32 * 0.001)),
+                                    );
+                                }
+                                RenderTarget::Ui => {
+                                    cmd.entity(child).insert(ZIndex(z as i32));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let to_spawn: Vec<LayerId> = desired
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .filter(|id| !existing.contains(id))
                     .collect();
 
                 if !to_spawn.is_empty() {
                     spawn_layered_children(
-                        &mut cmd, &server, entity, aseprite, tex, has_anim, &to_spawn, flip,
+                        &mut cmd, &server, entity, aseprite, tex, has_anim, &to_spawn, &desired, flip,
                     );
                 }
             }
@@ -307,7 +326,7 @@ fn spawn_children(
         spawn_baked_child(cmd, parent, tex, has_anim, flip);
     } else {
         let layers = matching_layers(aseprite, &tex.layers);
-        spawn_layered_children(cmd, server, parent, aseprite, tex, has_anim, &layers, flip);
+        spawn_layered_children(cmd, server, parent, aseprite, tex, has_anim, &layers, &layers, flip);
     }
 }
 
@@ -385,16 +404,18 @@ fn spawn_layered_children(
     tex: &AseTexture,
     has_anim: bool,
     layers: &[LayerId],
+    all_layers: &[LayerId],
     flip: Option<&AseFlip>,
 ) {
-    for (z, layer_id) in layers.iter().enumerate() {
+    for &layer_id in layers.iter() {
+        let z = all_layers.iter().position(|id| *id == layer_id).unwrap_or(0);
         let layer_path = format!("{}#{}", aseprite.source_path, layer_id.as_str());
         let layer_handle: Handle<Aseprite> = server.load(&layer_path);
 
         let common = (
             ChildOf(parent),
             SpriteLayerOf(parent),
-            *layer_id,
+            layer_id,
             Name::new(layer_id.as_str().to_owned()),
         );
 
