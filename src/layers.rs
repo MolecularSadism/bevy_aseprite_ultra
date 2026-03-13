@@ -202,16 +202,16 @@ fn matching_layers(aseprite: &Aseprite, filter: &LayerFilter) -> Vec<LayerId> {
 /// Spawns child entities for newly added [`AseTexture`] components.
 fn spawn_layers(
     mut cmd: Commands,
-    query: Query<(Entity, &AseTexture, Has<AseAnimation>), Without<SpriteLayers>>,
+    query: Query<(Entity, &AseTexture, Has<AseAnimation>, Option<&AseFlip>), Without<SpriteLayers>>,
     assets: Res<Assets<Aseprite>>,
     server: Res<AssetServer>,
 ) {
-    for (entity, tex, has_anim) in &query {
+    for (entity, tex, has_anim, flip) in &query {
         let Some(aseprite) = assets.get(&tex.aseprite) else {
             continue;
         };
 
-        spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim);
+        spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim, flip);
     }
 }
 
@@ -219,14 +219,14 @@ fn spawn_layers(
 fn update_layers(
     mut cmd: Commands,
     query: Query<
-        (Entity, &AseTexture, Has<AseAnimation>, &SpriteLayers),
+        (Entity, &AseTexture, Has<AseAnimation>, &SpriteLayers, Option<&AseFlip>),
         Changed<AseTexture>,
     >,
     layer_ids: Query<&LayerId, With<SpriteLayerOf>>,
     assets: Res<Assets<Aseprite>>,
     server: Res<AssetServer>,
 ) {
-    for (entity, tex, has_anim, sprite_layers) in &query {
+    for (entity, tex, has_anim, sprite_layers, flip) in &query {
         let Some(aseprite) = assets.get(&tex.aseprite) else {
             continue;
         };
@@ -235,7 +235,7 @@ fn update_layers(
             for child in sprite_layers.iter() {
                 cmd.entity(child).despawn();
             }
-            spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim);
+            spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim, flip);
         } else {
             let desired = matching_layers(aseprite, &tex.layers);
 
@@ -255,7 +255,7 @@ fn update_layers(
             }
 
             if has_non_layer_children {
-                spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim);
+                spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim, flip);
             } else {
                 let to_spawn: Vec<LayerId> = desired
                     .into_iter()
@@ -264,7 +264,7 @@ fn update_layers(
 
                 if !to_spawn.is_empty() {
                     spawn_layered_children(
-                        &mut cmd, &server, entity, aseprite, tex, has_anim, &to_spawn,
+                        &mut cmd, &server, entity, aseprite, tex, has_anim, &to_spawn, flip,
                     );
                 }
             }
@@ -301,12 +301,13 @@ fn spawn_children(
     aseprite: &Aseprite,
     tex: &AseTexture,
     has_anim: bool,
+    flip: Option<&AseFlip>,
 ) {
     if tex.baked {
-        spawn_baked_child(cmd, parent, tex, has_anim);
+        spawn_baked_child(cmd, parent, tex, has_anim, flip);
     } else {
         let layers = matching_layers(aseprite, &tex.layers);
-        spawn_layered_children(cmd, server, parent, aseprite, tex, has_anim, &layers);
+        spawn_layered_children(cmd, server, parent, aseprite, tex, has_anim, &layers, flip);
     }
 }
 
@@ -315,6 +316,7 @@ fn spawn_baked_child(
     parent: Entity,
     tex: &AseTexture,
     has_anim: bool,
+    flip: Option<&AseFlip>,
 ) {
     let common = (
         ChildOf(parent),
@@ -324,7 +326,12 @@ fn spawn_baked_child(
 
     match &tex.render_target {
         RenderTarget::Sprite => {
-            let mut entity_cmd = cmd.spawn((common, Sprite::default()));
+            let mut sprite = Sprite::default();
+            if let Some(flip) = flip {
+                sprite.flip_x = flip.x;
+                sprite.flip_y = flip.y;
+            }
+            let mut entity_cmd = cmd.spawn((common, sprite));
             if has_anim {
                 entity_cmd.insert((
                     AnimationLayer::new(tex.aseprite.clone()),
@@ -339,9 +346,14 @@ fn spawn_baked_child(
             }
         }
         RenderTarget::Ui => {
+            let mut node = ImageNode::default();
+            if let Some(flip) = flip {
+                node.flip_x = flip.x;
+                node.flip_y = flip.y;
+            }
             let mut entity_cmd = cmd.spawn((
                 common,
-                ImageNode::default(),
+                node,
                 Node {
                     position_type: PositionType::Absolute,
                     width: Val::Percent(100.),
@@ -373,6 +385,7 @@ fn spawn_layered_children(
     tex: &AseTexture,
     has_anim: bool,
     layers: &[LayerId],
+    flip: Option<&AseFlip>,
 ) {
     for (z, layer_id) in layers.iter().enumerate() {
         let layer_path = format!("{}#{}", aseprite.source_path, layer_id.as_str());
@@ -387,9 +400,14 @@ fn spawn_layered_children(
 
         match &tex.render_target {
             RenderTarget::Sprite => {
+                let mut sprite = Sprite::default();
+                if let Some(flip) = flip {
+                    sprite.flip_x = flip.x;
+                    sprite.flip_y = flip.y;
+                }
                 let mut entity_cmd = cmd.spawn((
                     common,
-                    Sprite::default(),
+                    sprite,
                     Transform::from_translation(Vec3::new(0., 0., z as f32 * 0.001)),
                 ));
                 if has_anim {
@@ -406,9 +424,14 @@ fn spawn_layered_children(
                 }
             }
             RenderTarget::Ui => {
+                let mut node = ImageNode::default();
+                if let Some(flip) = flip {
+                    node.flip_x = flip.x;
+                    node.flip_y = flip.y;
+                }
                 let mut entity_cmd = cmd.spawn((
                     common,
-                    ImageNode::default(),
+                    node,
                     Node {
                         position_type: PositionType::Absolute,
                         width: Val::Percent(100.),

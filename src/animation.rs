@@ -146,13 +146,22 @@ pub struct AseAnimation {
     pub tag: Option<String>,
     pub speed: f32,
     pub playing: bool,
-    pub repeat: AnimationRepeat,
+    /// Override for repeat behavior. `None` uses the aseprite file's tag repeat
+    /// count (falling back to loop when no tag or repeat=0). Set via
+    /// [`with_repeat`](Self::with_repeat); reset to file default with
+    /// [`use_file_repeat`](Self::use_file_repeat).
+    pub repeat: Option<AnimationRepeat>,
     /// Overwrite aseprite direction
     pub direction: Option<AnimationDirection>,
-    pub queue: VecDeque<(String, AnimationRepeat)>,
+    pub queue: VecDeque<(String, Option<AnimationRepeat>)>,
     pub hold_relative_frame: bool,
     pub relative_group: u16,
     pub new_relative_group: u16,
+    /// Runtime cycle counter. `None` = infinite loop, `Some(n)` = n cycles remaining.
+    /// Initialized by the animation system from `repeat` or the file's tag data.
+    pub(crate) remaining_cycles: Option<u32>,
+    /// Dirty flag: when true the system will re-resolve `remaining_cycles`.
+    pub(crate) needs_repeat_init: bool,
 }
 
 impl Default for AseAnimation {
@@ -161,12 +170,14 @@ impl Default for AseAnimation {
             tag: None,
             speed: 1.0,
             playing: true,
-            repeat: AnimationRepeat::Loop,
+            repeat: None,
             direction: None,
             queue: VecDeque::new(),
             hold_relative_frame: false,
             relative_group: 0,
             new_relative_group: 0,
+            remaining_cycles: None,
+            needs_repeat_init: true,
         }
     }
 }
@@ -195,9 +206,22 @@ impl AseAnimation {
         self
     }
 
-    /// Sets a repeat count, default is loop.
+    /// Overrides how many times the animation plays. Pass
+    /// `AnimationRepeat::Loop` for infinite looping or
+    /// `AnimationRepeat::Count(n)` to play exactly `n` times.
+    /// The override persists across tag changes until cleared with
+    /// [`use_file_repeat`](Self::use_file_repeat).
     pub fn with_repeat(mut self, repeat: AnimationRepeat) -> Self {
-        self.repeat = repeat;
+        self.repeat = Some(repeat);
+        self.needs_repeat_init = true;
+        self
+    }
+
+    /// Clears the repeat override so the animation uses the aseprite file's
+    /// tag repeat count.
+    pub fn use_file_repeat(mut self) -> Self {
+        self.repeat = None;
+        self.needs_repeat_init = true;
         self
     }
 
@@ -207,40 +231,60 @@ impl AseAnimation {
         self
     }
 
-    /// Chains an animation after the current one is done.
-    pub fn with_then(mut self, tag: impl Into<String>, repeats: AnimationRepeat) -> Self {
-        self.queue.push_back((tag.into(), repeats));
+    /// Chains an animation after the current one is done. Pass `None` for
+    /// repeat to use the file's tag repeat, or `Some(repeat)` to override.
+    pub fn with_then(
+        mut self,
+        tag: impl Into<String>,
+        repeat: Option<AnimationRepeat>,
+    ) -> Self {
+        self.queue.push_back((tag.into(), repeat));
         self
     }
 
-    /// Instantly starts playing a new animation, clearing any item left in the queue.
-    pub fn play(&mut self, tag: impl Into<String>, repeat: AnimationRepeat) {
+    /// Instantly starts playing a new animation using the file's tag repeat
+    /// count. Clears any queued animations and any repeat override.
+    pub fn play(&mut self, tag: impl Into<String>) {
         self.playing = true;
         self.tag = Some(tag.into());
-        self.repeat = repeat;
+        self.repeat = None;
+        self.needs_repeat_init = true;
+        self.queue.clear();
+    }
+
+    /// Instantly starts playing a new animation with an explicit repeat
+    /// override. Clears any queued animations.
+    pub fn play_with_repeat(&mut self, tag: impl Into<String>, repeat: AnimationRepeat) {
+        self.playing = true;
+        self.tag = Some(tag.into());
+        self.repeat = Some(repeat);
+        self.needs_repeat_init = true;
         self.queue.clear();
     }
 
     /// Instantly starts playing a new animation starting with same relative frame
     /// only if the new relative group is the same as the previous one.
+    /// Uses the file's tag repeat count.
     pub fn play_with_relative_group(
         &mut self,
         tag: impl Into<String>,
-        repeat: AnimationRepeat,
         new_relative_group: u16,
     ) {
         self.playing = true;
         self.tag = Some(tag.into());
         self.new_relative_group = new_relative_group;
-        self.repeat = repeat;
+        self.repeat = None;
+        self.needs_repeat_init = true;
         self.queue.clear();
     }
 
-    /// Instantly starts playing a new looping animation.
+    /// Instantly starts playing a new looping animation, overriding the file's
+    /// repeat count.
     pub fn play_loop(&mut self, tag: impl Into<String>) {
         self.playing = true;
         self.tag = Some(tag.into());
-        self.repeat = AnimationRepeat::Loop;
+        self.repeat = Some(AnimationRepeat::Loop);
+        self.needs_repeat_init = true;
         self.queue.clear();
     }
 
@@ -248,7 +292,8 @@ impl AseAnimation {
     pub fn stop(&mut self) {
         self.playing = false;
         self.tag = None;
-        self.repeat = AnimationRepeat::Loop;
+        self.repeat = None;
+        self.needs_repeat_init = true;
         self.queue.clear();
     }
 
@@ -262,9 +307,10 @@ impl AseAnimation {
         self.playing = true;
     }
 
-    /// Chains an animation after the current one is done.
-    pub fn then(&mut self, tag: impl Into<String>, repeats: AnimationRepeat) {
-        self.queue.push_back((tag.into(), repeats));
+    /// Chains an animation after the current one is done. Pass `None` for
+    /// repeat to use the file's tag repeat, or `Some(repeat)` to override.
+    pub fn then(&mut self, tag: impl Into<String>, repeat: Option<AnimationRepeat>) {
+        self.queue.push_back((tag.into(), repeat));
     }
 
     /// Clears any queued up animations.
@@ -276,17 +322,14 @@ impl AseAnimation {
         if let Some((tag, repeat)) = self.queue.pop_front() {
             self.tag = Some(tag);
             self.repeat = repeat;
+            self.needs_repeat_init = true;
         }
     }
 }
 
 impl From<&str> for AseAnimation {
     fn from(tag: &str) -> Self {
-        AseAnimation {
-            tag: Some(tag.to_string()),
-            speed: 1.0,
-            ..Default::default()
-        }
+        Self::default().with_tag(tag)
     }
 }
 
@@ -384,12 +427,15 @@ impl From<RawDirection> for AnimationDirection {
     }
 }
 
-/// How many times an animation should repeat.
+/// How many times an animation should play.
 #[derive(Default, Debug, Clone, Reflect)]
 #[reflect]
 pub enum AnimationRepeat {
+    /// Play indefinitely.
     #[default]
     Loop,
+    /// Play exactly `n` times (1 = play once, 2 = play twice, …).
+    /// A value of 0 is treated the same as 1.
     Count(u32),
 }
 
@@ -438,16 +484,35 @@ pub fn update_aseprite_animation(
             continue;
         };
 
+        let tag_meta = animation
+            .tag
+            .as_ref()
+            .map(|t| aseprite.tags.get(t))
+            .flatten();
+
         let range = match animation.tag.as_ref() {
-            Some(tag) => aseprite
-                .tags
-                .get(tag)
+            Some(tag) => tag_meta
                 .map(|meta| meta.range.clone())
                 .context(format!(
                     "Animation tag \"{tag}\" not found in aseprite file",
                 ))?,
             None => 0..=(aseprite.frame_durations.len() as u16 - 1),
         };
+
+        // Resolve remaining_cycles from override or file when needed.
+        // remaining_cycles counts how many more times the animation will restart
+        // after the current play: Count(1) → 0 remaining, Count(2) → 1 remaining, etc.
+        if animation.needs_repeat_init {
+            animation.remaining_cycles = match &animation.repeat {
+                Some(AnimationRepeat::Loop) => None,
+                Some(AnimationRepeat::Count(n)) => Some(n.saturating_sub(1)),
+                None => match tag_meta {
+                    Some(meta) if meta.repeat > 0 => Some(u32::from(meta.repeat).saturating_sub(1)),
+                    _ => None,
+                },
+            };
+            animation.needs_repeat_init = false;
+        }
 
         if !range.contains(&state.current_frame) {
             if !animation.hold_relative_frame {
@@ -546,30 +611,40 @@ fn next_frame(
         }
     };
 
+    // Helper: handle end-of-cycle logic using remaining_cycles.
+    // Returns true if the animation should wrap/continue, false if finished.
+    let handle_cycle_end = |anim: &mut AseAnimation,
+                            events: &mut MessageWriter<AnimationEvents>,
+                            entity: Entity|
+     -> bool {
+        match anim.remaining_cycles {
+            None => {
+                events.write(AnimationEvents::LoopCycleFinished(entity));
+                true
+            }
+            Some(0) => {
+                if anim.queue.is_empty() {
+                    events.write(AnimationEvents::Finished(entity));
+                } else {
+                    anim.next();
+                }
+                false
+            }
+            Some(n) => {
+                anim.remaining_cycles = Some(n - 1);
+                true
+            }
+        }
+    };
+
     match direction {
         AnimationDirection::Forward => {
             let next = state.current_frame + 1;
 
             if next > *range.end() {
-                match anim.repeat {
-                    AnimationRepeat::Loop => {
-                        state.current_frame = *range.start();
-                        state.relative_frame = 0;
-                        events.write(AnimationEvents::LoopCycleFinished(trigger.0));
-                    }
-                    AnimationRepeat::Count(count) => {
-                        if count > 0 {
-                            state.current_frame = *range.start();
-                            state.relative_frame = 0;
-                            anim.repeat = AnimationRepeat::Count(count - 1);
-                        } else {
-                            if anim.queue.is_empty() {
-                                events.write(AnimationEvents::Finished(trigger.0));
-                            } else {
-                                anim.next();
-                            }
-                        }
-                    }
+                if handle_cycle_end(&mut anim, &mut events, trigger.0) {
+                    state.current_frame = *range.start();
+                    state.relative_frame = 0;
                 }
             } else {
                 state.current_frame = next;
@@ -580,25 +655,9 @@ fn next_frame(
             let next = state.current_frame.checked_sub(1).unwrap_or(*range.end());
 
             if next == *range.end() {
-                match anim.repeat {
-                    AnimationRepeat::Loop => {
-                        state.current_frame = range.end() - 1;
-                        state.relative_frame = range.end() - range.start() - 1;
-                        events.write(AnimationEvents::LoopCycleFinished(trigger.0));
-                    }
-                    AnimationRepeat::Count(count) => {
-                        if count > 0 {
-                            state.current_frame = range.end() - 1;
-                            state.relative_frame = range.end() - range.start() - 1;
-                            anim.repeat = AnimationRepeat::Count(count - 1);
-                        } else {
-                            if anim.queue.is_empty() {
-                                events.write(AnimationEvents::Finished(trigger.0));
-                            } else {
-                                anim.next();
-                            }
-                        }
-                    }
+                if handle_cycle_end(&mut anim, &mut events, trigger.0) {
+                    state.current_frame = range.end() - 1;
+                    state.relative_frame = range.end() - range.start() - 1;
                 }
             } else {
                 state.current_frame = next;
@@ -623,51 +682,17 @@ fn next_frame(
             };
 
             if next >= *range.end() && is_forward {
-                match anim.repeat {
-                    AnimationRepeat::Loop => {
-                        state.current_direction = PlayDirection::Backward;
-                        state.current_frame = range.end() - 2;
-                        state.relative_frame = range.end() - range.start() - 2;
-                        events.write(AnimationEvents::LoopCycleFinished(trigger.0));
-                    }
-                    AnimationRepeat::Count(count) => {
-                        if count > 0 {
-                            state.current_direction = PlayDirection::Backward;
-                            state.current_frame = range.end() - 2;
-                            state.relative_frame = range.end() - range.start() - 2;
-                            anim.repeat = AnimationRepeat::Count(count - 1);
-                        } else {
-                            if anim.queue.is_empty() {
-                                events.write(AnimationEvents::Finished(trigger.0));
-                            } else {
-                                anim.next();
-                            }
-                        }
-                    }
-                };
+                if handle_cycle_end(&mut anim, &mut events, trigger.0) {
+                    state.current_direction = PlayDirection::Backward;
+                    state.current_frame = range.end() - 2;
+                    state.relative_frame = range.end() - range.start() - 2;
+                }
             } else if next <= *range.start() && !is_forward {
-                match anim.repeat {
-                    AnimationRepeat::Loop => {
-                        state.current_direction = PlayDirection::Forward;
-                        state.current_frame = *range.start();
-                        state.relative_frame = 0;
-                        events.write(AnimationEvents::LoopCycleFinished(trigger.0));
-                    }
-                    AnimationRepeat::Count(count) => {
-                        if count > 0 {
-                            state.current_direction = PlayDirection::Forward;
-                            state.current_frame = *range.start();
-                            state.relative_frame = 0;
-                            anim.repeat = AnimationRepeat::Count(count - 1);
-                        } else {
-                            if anim.queue.is_empty() {
-                                events.write(AnimationEvents::Finished(trigger.0));
-                            } else {
-                                anim.next();
-                            }
-                        }
-                    }
-                };
+                if handle_cycle_end(&mut anim, &mut events, trigger.0) {
+                    state.current_direction = PlayDirection::Forward;
+                    state.current_frame = *range.start();
+                    state.relative_frame = 0;
+                }
             } else {
                 state.current_frame = next;
                 state.relative_frame = relative_next;
