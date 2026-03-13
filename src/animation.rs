@@ -17,7 +17,7 @@ pub struct AsepriteAnimationPlugin;
 impl Plugin for AsepriteAnimationPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<AnimationEvents>();
-        app.add_systems(PreUpdate, (update_aseprite_animation, propagate_frame).chain());
+        app.add_systems(PreUpdate, update_aseprite_animation);
 
         app.add_systems(
             PostUpdate,
@@ -699,27 +699,6 @@ fn next_frame(
             }
         }
     };
-}
-
-/// Propagates parent [`AnimationState`] to children's render targets.
-/// Runs after tick so children always reflect the latest frame.
-fn propagate_frame(
-    parents: Query<(&AnimationState, &SpriteLayers), With<AseAnimation>>,
-    mut child_sprites: Query<&mut AnimationState, Without<AseAnimation>>,
-) {
-    for (parent_state, layers) in &parents {
-        for child in layers.iter() {
-            if let Ok(mut child_state) = child_sprites.get_mut(child) {
-                child_state.current_frame = parent_state.current_frame;
-                child_state.relative_frame = parent_state.relative_frame;
-                child_state.elapsed = parent_state.elapsed;
-                child_state.current_direction = match &parent_state.current_direction {
-                    PlayDirection::Forward => PlayDirection::Forward,
-                    PlayDirection::Backward => PlayDirection::Backward,
-                };
-            }
-        }
-    }
 }
 
 // ---- Render systems ----

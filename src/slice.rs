@@ -1,4 +1,5 @@
 use crate::animation::AnimationState;
+use crate::layers::SpriteLayerOf;
 use crate::loader::{Aseprite, SliceMeta};
 use bevy::{
     ecs::component::Mutable, prelude::*, sprite::Anchor, sprite_render::Material2d, ui::UiSystems,
@@ -145,13 +146,20 @@ impl AseSlice {
 }
 
 pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
-    mut slices: Query<(&mut T, Ref<AseSlice>, Option<&AnimationState>, Option<&mut Anchor>)>,
+    mut slices: Query<(
+        &mut T,
+        Ref<AseSlice>,
+        Option<&AnimationState>,
+        Option<&SpriteLayerOf>,
+        Option<&mut Anchor>,
+    )>,
+    parent_states: Query<&AnimationState>,
     aseprites: Res<Assets<Aseprite>>,
     mut extra: <T as RenderSlice>::Extra<'_>,
 ) {
     let asset_change = aseprites.is_changed();
 
-    for (mut target, slice, maybe_state, maybe_anchor) in &mut slices {
+    for (mut target, slice, local_state, parent_ref, maybe_anchor) in &mut slices {
         if !asset_change && !slice.is_changed() {
             continue;
         }
@@ -162,6 +170,11 @@ pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
             warn!("slice does not exist {}", slice.name);
             continue;
         };
+
+        // Resolve AnimationState: prefer local (standalone), then look up parent.
+        let maybe_state = local_state.or_else(|| {
+            parent_ref.and_then(|p| parent_states.get(p.0).ok())
+        });
 
         // For animated slices, use the frame-specific key if available.
         let effective_meta = if let Some(state) = maybe_state {

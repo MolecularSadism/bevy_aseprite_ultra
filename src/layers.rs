@@ -1,4 +1,4 @@
-use crate::animation::{AseAnimation, AnimationLayer, AnimationState};
+use crate::animation::{AseAnimation, AnimationLayer};
 use crate::loader::Aseprite;
 use crate::slice::AseSlice;
 use bevy::prelude::*;
@@ -352,10 +352,7 @@ fn spawn_baked_child(
             }
             let mut entity_cmd = cmd.spawn((common, sprite));
             if has_anim {
-                entity_cmd.insert((
-                    AnimationLayer::new(tex.aseprite.clone()),
-                    AnimationState::default(),
-                ));
+                entity_cmd.insert(AnimationLayer::new(tex.aseprite.clone()));
             }
             if let Some(slice_id) = &tex.slice {
                 entity_cmd.insert(AseSlice {
@@ -381,10 +378,7 @@ fn spawn_baked_child(
                 },
             ));
             if has_anim {
-                entity_cmd.insert((
-                    AnimationLayer::new(tex.aseprite.clone()),
-                    AnimationState::default(),
-                ));
+                entity_cmd.insert(AnimationLayer::new(tex.aseprite.clone()));
             }
             if let Some(slice_id) = &tex.slice {
                 entity_cmd.insert(AseSlice {
@@ -432,10 +426,7 @@ fn spawn_layered_children(
                     Transform::from_translation(Vec3::new(0., 0., z as f32 * 0.001)),
                 ));
                 if has_anim {
-                    entity_cmd.insert((
-                        AnimationLayer::new(layer_handle.clone()),
-                        AnimationState::default(),
-                    ));
+                    entity_cmd.insert(AnimationLayer::new(layer_handle.clone()));
                 }
                 if let Some(slice_id) = &tex.slice {
                     entity_cmd.insert(AseSlice {
@@ -462,10 +453,7 @@ fn spawn_layered_children(
                     ZIndex(z as i32),
                 ));
                 if has_anim {
-                    entity_cmd.insert((
-                        AnimationLayer::new(layer_handle.clone()),
-                        AnimationState::default(),
-                    ));
+                    entity_cmd.insert(AnimationLayer::new(layer_handle.clone()));
                 }
                 if let Some(slice_id) = &tex.slice {
                     entity_cmd.insert(AseSlice {
