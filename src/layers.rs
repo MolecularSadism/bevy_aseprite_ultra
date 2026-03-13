@@ -26,6 +26,7 @@ impl Plugin for AsepriteLayersPlugin {
                 spawn_layers,
                 update_layers,
                 propagate_flip,
+                propagate_offset,
             ),
         );
     }
@@ -118,6 +119,9 @@ pub struct AseTexture {
     pub slice: Option<SliceId>,
     pub baked: bool,
     pub render_target: RenderTarget,
+    /// Offset applied relatively to child render entities' transforms (Sprite)
+    /// or node positions (UI).
+    pub offset: Vec2,
 }
 
 impl AseTexture {
@@ -129,6 +133,7 @@ impl AseTexture {
             slice: None,
             baked: false,
             render_target: RenderTarget::Sprite,
+            offset: default(),
         }
     }
 
@@ -140,6 +145,7 @@ impl AseTexture {
             slice: None,
             baked: true,
             render_target: RenderTarget::Sprite,
+            offset: default(),
         }
     }
 
@@ -172,6 +178,12 @@ impl AseTexture {
         self.render_target = RenderTarget::Ui;
         self
     }
+
+    /// Set the offset applied to child render entities.
+    pub fn with_offset(mut self, offset: Vec2) -> Self {
+        self.offset = offset;
+        self
+    }
 }
 
 /// Flip state that propagates to all child render entities.
@@ -183,6 +195,10 @@ pub struct AseFlip {
     pub x: bool,
     pub y: bool,
 }
+
+/// Tracks the last applied offset so changes can be applied relatively.
+#[derive(Component, Default, Clone, Debug)]
+struct AppliedOffset(Vec2);
 
 // ---- systems ----
 
@@ -264,7 +280,7 @@ fn update_layers(
                             match &tex.render_target {
                                 RenderTarget::Sprite => {
                                     cmd.entity(child).insert(
-                                        Transform::from_translation(Vec3::new(0., 0., z as f32 * 0.001)),
+                                        Transform::from_translation(Vec3::new(tex.offset.x, tex.offset.y, z as f32 * 0.001)),
                                     );
                                 }
                                 RenderTarget::Ui => {
@@ -311,6 +327,42 @@ fn propagate_flip(
     }
 }
 
+/// Propagates [`AseTexture::offset`] changes relatively to children.
+///
+/// Computes the delta between the new offset and the previously applied one,
+/// then adds that delta to each child's [`Transform`] (Sprite mode) or
+/// [`Node`] position (UI mode). This preserves any other positional changes
+/// made by other systems (e.g. z-ordering).
+fn propagate_offset(
+    parents: Query<(&AseTexture, &SpriteLayers), Changed<AseTexture>>,
+    mut sprites: Query<(&mut Transform, &mut AppliedOffset)>,
+    mut ui_nodes: Query<(&mut Node, &mut AppliedOffset), Without<Transform>>,
+) {
+    for (tex, layers) in &parents {
+        let new_offset = tex.offset;
+
+        for child in layers.iter() {
+            match &tex.render_target {
+                RenderTarget::Sprite => {
+                    if let Ok((mut transform, mut applied)) = sprites.get_mut(child) {
+                        let delta = new_offset - applied.0;
+                        transform.translation.x += delta.x;
+                        transform.translation.y += delta.y;
+                        applied.0 = new_offset;
+                    }
+                }
+                RenderTarget::Ui => {
+                    if let Ok((mut node, mut applied)) = ui_nodes.get_mut(child) {
+                        node.left = Val::Px(new_offset.x);
+                        node.top = Val::Px(new_offset.y);
+                        applied.0 = new_offset;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ---- helpers ----
 
 fn spawn_children(
@@ -350,7 +402,13 @@ fn spawn_baked_child(
                 sprite.flip_x = flip.x;
                 sprite.flip_y = flip.y;
             }
-            let mut entity_cmd = cmd.spawn((common, sprite));
+            let offset_translation = Vec3::new(tex.offset.x, tex.offset.y, 0.);
+            let mut entity_cmd = cmd.spawn((
+                common,
+                sprite,
+                Transform::from_translation(offset_translation),
+                AppliedOffset(tex.offset),
+            ));
             if has_anim {
                 entity_cmd.insert(AnimationLayer::new(tex.aseprite.clone()));
             }
@@ -367,6 +425,7 @@ fn spawn_baked_child(
                 node.flip_x = flip.x;
                 node.flip_y = flip.y;
             }
+            let (left, top) = (tex.offset.x, tex.offset.y);
             let mut entity_cmd = cmd.spawn((
                 common,
                 node,
@@ -374,8 +433,11 @@ fn spawn_baked_child(
                     position_type: PositionType::Absolute,
                     width: Val::Percent(100.),
                     height: Val::Percent(100.),
+                    left: Val::Px(left),
+                    top: Val::Px(top),
                     ..default()
                 },
+                AppliedOffset(tex.offset),
             ));
             if has_anim {
                 entity_cmd.insert(AnimationLayer::new(tex.aseprite.clone()));
@@ -420,10 +482,12 @@ fn spawn_layered_children(
                     sprite.flip_x = flip.x;
                     sprite.flip_y = flip.y;
                 }
+                let translation = Vec3::new(tex.offset.x, tex.offset.y, z as f32 * 0.001);
                 let mut entity_cmd = cmd.spawn((
                     common,
                     sprite,
-                    Transform::from_translation(Vec3::new(0., 0., z as f32 * 0.001)),
+                    Transform::from_translation(translation),
+                    AppliedOffset(tex.offset),
                 ));
                 if has_anim {
                     entity_cmd.insert(AnimationLayer::new(layer_handle.clone()));
@@ -441,6 +505,10 @@ fn spawn_layered_children(
                     node.flip_x = flip.x;
                     node.flip_y = flip.y;
                 }
+                #[cfg(not(feature = "3d"))]
+                let (left, top) = (tex.offset.x, tex.offset.y);
+                #[cfg(feature = "3d")]
+                let (left, top) = (tex.offset.x, tex.offset.y);
                 let mut entity_cmd = cmd.spawn((
                     common,
                     node,
@@ -448,9 +516,12 @@ fn spawn_layered_children(
                         position_type: PositionType::Absolute,
                         width: Val::Percent(100.),
                         height: Val::Percent(100.),
+                        left: Val::Px(left),
+                        top: Val::Px(top),
                         ..default()
                     },
                     ZIndex(z as i32),
+                    AppliedOffset(tex.offset),
                 ));
                 if has_anim {
                     entity_cmd.insert(AnimationLayer::new(layer_handle.clone()));
