@@ -40,11 +40,13 @@ pub struct LayerId(bevy::ecs::intern::Interned<str>);
 #[derive(InternedId, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SliceId(bevy::ecs::intern::Interned<str>);
 
-/// Selects which layers to spawn as children.
+/// Selects which layers are visible. All layers are always spawned as children;
+/// this filter only controls which children have [`Visibility::Inherited`] vs
+/// [`Visibility::Hidden`].
 ///
 /// ```rust
 /// # use bevy_aseprite_ultra::prelude::*;
-/// // All layers including hidden ones
+/// // All layers visible including hidden ones
 /// let all = LayerFilter::All;
 ///
 /// // Only layers marked visible in the aseprite file (default)
@@ -58,12 +60,12 @@ pub struct SliceId(bevy::ecs::intern::Interned<str>);
 /// ```
 #[derive(Clone, Debug, Default)]
 pub enum LayerFilter {
-    /// All layers including hidden ones.
+    /// All layers visible including hidden ones.
     All,
     /// Only layers marked visible in the aseprite file (default).
     #[default]
     Visible,
-    /// Only these specific layers.
+    /// Only these specific layers visible.
     Include(Vec<LayerId>),
 }
 
@@ -82,6 +84,12 @@ pub struct SpriteLayers(Vec<Entity>);
 /// Always spawns child entities for rendering — the parent entity itself does
 /// not render. Use [`baked`](AseTexture::baked) mode for a single composite
 /// child, or the default layered mode for per-layer children.
+///
+/// In layered mode **all** layers from the aseprite file are always spawned as
+/// children. The [`layers`](AseTexture::layers) filter only controls which
+/// children are visible; it does not affect which entities exist. This avoids
+/// entity churn when switching visibility rapidly and makes z-ordering stable
+/// (set once at spawn time, never recalculated).
 ///
 /// Add [`AseAnimation`] alongside this component to opt into animation ticking.
 /// Without it, children are fully static with zero per-tick overhead.
@@ -125,7 +133,7 @@ pub struct AseTexture {
 }
 
 impl AseTexture {
-    /// Layered mode (default). Spawns one child per visible layer.
+    /// Layered mode (default). Spawns one child per layer (all layers).
     pub fn new(aseprite: Handle<Aseprite>) -> Self {
         AseTexture {
             aseprite,
@@ -184,6 +192,35 @@ impl AseTexture {
         self.offset = offset;
         self
     }
+
+    /// Show a layer. Adds it to the [`LayerFilter::Include`] list if not
+    /// already present.
+    ///
+    /// Has no effect when the filter is [`LayerFilter::All`] or
+    /// [`LayerFilter::Visible`] (all relevant layers are already shown).
+    /// Switch to [`LayerFilter::Include`] first to toggle individual layers.
+    ///
+    /// Mutating `AseTexture` triggers the visibility update system.
+    pub fn toggle_layer_on(&mut self, layer: LayerId) {
+        if let LayerFilter::Include(ids) = &mut self.layers {
+            if !ids.contains(&layer) {
+                ids.push(layer);
+            }
+        }
+    }
+
+    /// Hide a layer. Removes it from the [`LayerFilter::Include`] list.
+    ///
+    /// Has no effect when the filter is [`LayerFilter::All`] or
+    /// [`LayerFilter::Visible`]. Switch to [`LayerFilter::Include`] first to
+    /// toggle individual layers.
+    ///
+    /// Mutating `AseTexture` triggers the visibility update system.
+    pub fn toggle_layer_off(&mut self, layer: LayerId) {
+        if let LayerFilter::Include(ids) = &mut self.layers {
+            ids.retain(|id| *id != layer);
+        }
+    }
 }
 
 /// Flip state that propagates to all child render entities.
@@ -202,7 +239,7 @@ struct AppliedOffset(Vec2);
 
 // ---- systems ----
 
-fn matching_layers(aseprite: &Aseprite, filter: &LayerFilter) -> Vec<LayerId> {
+fn visible_layers(aseprite: &Aseprite, filter: &LayerFilter) -> Vec<LayerId> {
     match filter {
         LayerFilter::All => aseprite.layer_names.clone(),
         LayerFilter::Visible => aseprite.visible_layer_names.clone(),
@@ -231,7 +268,15 @@ fn spawn_layers(
     }
 }
 
-/// Diffs children when [`AseTexture`] changes.
+/// Updates children when [`AseTexture`] changes.
+///
+/// In layered mode (non-baked): all layer children are always kept alive.
+/// Only their [`Visibility`] is toggled based on the current filter. This
+/// avoids entity churn when the filter changes rapidly, and z-ordering never
+/// needs to be recalculated.
+///
+/// A full respawn only happens when the underlying aseprite asset changes
+/// (different layer set detected).
 fn update_layers(
     mut cmd: Commands,
     query: Query<
@@ -253,54 +298,38 @@ fn update_layers(
             }
             spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim, flip);
         } else {
-            let desired = matching_layers(aseprite, &tex.layers);
+            let all_layers = &aseprite.layer_names;
 
-            let mut existing: Vec<LayerId> = Vec::new();
-            let mut has_non_layer_children = false;
-            for child in sprite_layers.iter() {
-                if let Ok(id) = layer_ids.get(child) {
-                    if desired.contains(id) {
-                        existing.push(*id);
-                    } else {
-                        cmd.entity(child).despawn();
-                    }
-                } else {
+            // Check whether existing children exactly match the aseprite's full
+            // layer set. If not (e.g. aseprite handle changed), do a full respawn.
+            let children_match = {
+                let count = sprite_layers.iter().count();
+                count == all_layers.len()
+                    && sprite_layers.iter().all(|child| {
+                        layer_ids
+                            .get(child)
+                            .map(|id| all_layers.contains(id))
+                            .unwrap_or(false)
+                    })
+            };
+
+            if !children_match {
+                for child in sprite_layers.iter() {
                     cmd.entity(child).despawn();
-                    has_non_layer_children = true;
                 }
-            }
-
-            if has_non_layer_children {
                 spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim, flip);
             } else {
-                // Update z-ordering on retained children.
+                // Fast path: only toggle visibility, no spawning or z-reordering.
+                let visible = visible_layers(aseprite, &tex.layers);
                 for child in sprite_layers.iter() {
                     if let Ok(id) = layer_ids.get(child) {
-                        if let Some(z) = desired.iter().position(|d| d == id) {
-                            match &tex.render_target {
-                                RenderTarget::Sprite => {
-                                    cmd.entity(child).insert(
-                                        Transform::from_translation(Vec3::new(tex.offset.x, tex.offset.y, z as f32 * 0.001)),
-                                    );
-                                }
-                                RenderTarget::Ui => {
-                                    cmd.entity(child).insert(ZIndex(z as i32));
-                                }
-                            }
-                        }
+                        let vis = if visible.contains(id) {
+                            Visibility::Inherited
+                        } else {
+                            Visibility::Hidden
+                        };
+                        cmd.entity(child).insert(vis);
                     }
-                }
-
-                let to_spawn: Vec<LayerId> = desired
-                    .iter()
-                    .copied()
-                    .filter(|id| !existing.contains(id))
-                    .collect();
-
-                if !to_spawn.is_empty() {
-                    spawn_layered_children(
-                        &mut cmd, &server, entity, aseprite, tex, has_anim, &to_spawn, &desired, flip,
-                    );
                 }
             }
         }
@@ -377,8 +406,19 @@ fn spawn_children(
     if tex.baked {
         spawn_baked_child(cmd, parent, tex, has_anim, flip);
     } else {
-        let layers = matching_layers(aseprite, &tex.layers);
-        spawn_layered_children(cmd, server, parent, aseprite, tex, has_anim, &layers, &layers, flip);
+        // Spawn ALL layers; visibility is determined by the filter.
+        let visible = visible_layers(aseprite, &tex.layers);
+        spawn_layered_children(
+            cmd,
+            server,
+            parent,
+            aseprite,
+            tex,
+            has_anim,
+            &aseprite.layer_names,
+            &visible,
+            flip,
+        );
     }
 }
 
@@ -452,6 +492,14 @@ fn spawn_baked_child(
     }
 }
 
+/// Spawns one child entity per layer.
+///
+/// `layers` is the full ordered layer list (determines z-ordering and which
+/// entities are created). `visible` is the subset that should start with
+/// [`Visibility::Inherited`]; all others get [`Visibility::Hidden`].
+///
+/// Z-ordering is computed once here from the layer's position in `layers` and
+/// never recalculated, since all layers are always present.
 fn spawn_layered_children(
     cmd: &mut Commands,
     server: &AssetServer,
@@ -460,11 +508,16 @@ fn spawn_layered_children(
     tex: &AseTexture,
     has_anim: bool,
     layers: &[LayerId],
-    all_layers: &[LayerId],
+    visible: &[LayerId],
     flip: Option<&AseFlip>,
 ) {
-    for &layer_id in layers.iter() {
-        let z = all_layers.iter().position(|id| *id == layer_id).unwrap_or(0);
+    for (z, &layer_id) in layers.iter().enumerate() {
+        let visibility = if visible.contains(&layer_id) {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+
         let layer_path = format!("{}#{}", aseprite.source_path, layer_id.as_str());
         let layer_handle: Handle<Aseprite> = server.load(&layer_path);
 
@@ -473,6 +526,7 @@ fn spawn_layered_children(
             SpriteLayerOf(parent),
             layer_id,
             Name::new(layer_id.as_str().to_owned()),
+            visibility,
         );
 
         match &tex.render_target {
@@ -505,9 +559,6 @@ fn spawn_layered_children(
                     node.flip_x = flip.x;
                     node.flip_y = flip.y;
                 }
-                #[cfg(not(feature = "3d"))]
-                let (left, top) = (tex.offset.x, tex.offset.y);
-                #[cfg(feature = "3d")]
                 let (left, top) = (tex.offset.x, tex.offset.y);
                 let mut entity_cmd = cmd.spawn((
                     common,
