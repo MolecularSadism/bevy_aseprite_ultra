@@ -19,8 +19,8 @@ pub mod prelude {
         NextFrameEvent, PlayDirection, RenderAnimation,
     };
     pub use crate::layers::{
-        AseFlip, AseTexture, LayerFilter, LayerId, RenderTarget, SliceId, SpriteLayerOf,
-        SpriteLayers,
+        AseFlip, AseTexture, LayerEntry, LayerFilter, LayerId, RenderTarget, SliceId,
+        SpriteLayerOf, SpriteLayers,
     };
     pub use crate::loader::{Aseprite, AsepriteLoaderPlugin, AsepriteLoaderSettings, SliceMeta};
     pub use crate::slice::{render_slice, AseSlice, RenderSlice};
