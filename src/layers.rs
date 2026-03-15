@@ -38,6 +38,26 @@ impl Plugin for AsepriteLayersPlugin {
 #[derive(InternedId, Component, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct LayerId(bevy::ecs::intern::Interned<str>);
 
+/// A layer entry combining the layer's identity with its file-defined visibility.
+///
+/// The [`Aseprite`] asset stores layers as `Vec<LayerEntry>` in **front-to-back
+/// order** (index 0 = topmost layer in the Aseprite editor, renders in front).
+/// Reorder or toggle `visible` at runtime to change rendering without replacing
+/// the list.
+#[derive(Clone, Debug)]
+pub struct LayerEntry {
+    pub id: LayerId,
+    /// Whether the layer was marked visible in the aseprite file.
+    /// Toggle at runtime to show/hide without removing from the list.
+    pub visible: bool,
+}
+
+impl LayerEntry {
+    pub fn new(id: LayerId, visible: bool) -> Self {
+        Self { id, visible }
+    }
+}
+
 /// Type-safe interned slice name. O(1) comparisons, `Copy`.
 #[derive(InternedId, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SliceId(bevy::ecs::intern::Interned<str>);
@@ -243,15 +263,26 @@ struct AppliedOffset(Vec2);
 
 fn visible_layers(aseprite: &Aseprite, filter: &LayerFilter) -> Vec<LayerId> {
     match filter {
-        LayerFilter::All => aseprite.layer_names.clone(),
-        LayerFilter::Visible => aseprite.visible_layer_names.clone(),
-        LayerFilter::Include(names) => aseprite
-            .layer_names
+        LayerFilter::All => aseprite.layers.iter().map(|e| e.id).collect(),
+        LayerFilter::Visible => aseprite
+            .layers
             .iter()
-            .filter(|id| names.contains(id))
-            .copied()
+            .filter(|e| e.visible)
+            .map(|e| e.id)
+            .collect(),
+        LayerFilter::Include(names) => aseprite
+            .layers
+            .iter()
+            .filter(|e| names.contains(&e.id))
+            .map(|e| e.id)
             .collect(),
     }
+}
+
+/// Convert a front-to-back index into a z-order value.
+/// Index 0 (front) gets the highest z so it renders on top.
+fn z_from_index(index: usize, total: usize) -> usize {
+    total.saturating_sub(1).saturating_sub(index)
 }
 
 /// Observer that fires when [`AseTexture`] is added. Spawns children immediately
@@ -330,7 +361,7 @@ fn update_layers(
             }
             spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, has_anim, flip);
         } else {
-            let all_layers = &aseprite.layer_names;
+            let all_layers = &aseprite.layer_ids().collect::<Vec<_>>();
 
             // Check whether existing children exactly match the aseprite's full
             // layer set. If not (e.g. aseprite handle changed), do a full respawn.
@@ -449,7 +480,7 @@ fn spawn_children(
             aseprite,
             tex,
             has_anim,
-            &aseprite.layer_names,
+            &aseprite.layer_ids().collect::<Vec<_>>(),
             &visible,
             flip,
         );
@@ -561,7 +592,9 @@ fn spawn_layered_children(
     visible: &[LayerId],
     flip: Option<&AseFlip>,
 ) {
-    for (z, &layer_id) in layers.iter().enumerate() {
+    let total = layers.len();
+    for (idx, &layer_id) in layers.iter().enumerate() {
+        let z = z_from_index(idx, total);
         let visibility = if visible.contains(&layer_id) {
             Visibility::Inherited
         } else {

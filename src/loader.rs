@@ -1,5 +1,5 @@
 use crate::error::AsepriteError;
-use crate::layers::LayerId;
+use crate::layers::{LayerEntry, LayerId};
 use aseprite_loader::{
     binary::chunks::tags::AnimationDirection,
     loader::{AsepriteFile, LayerSelection},
@@ -48,12 +48,12 @@ pub struct Aseprite {
     /// The asset path this was loaded from, for constructing sub-asset paths.
     #[cfg_attr(feature = "asset_processing", serde(skip))]
     pub source_path: String,
-    /// All layer names in z-order (bottom to top).
+    /// All layers in **front-to-back order** (index 0 = topmost layer in the
+    /// Aseprite editor, renders in front). Each entry carries the layer's
+    /// file-defined visibility. Reorder or toggle `visible` at runtime to
+    /// change rendering.
     #[cfg_attr(feature = "asset_processing", serde(skip))]
-    pub layer_names: Vec<LayerId>,
-    /// Layer names that are marked visible in the aseprite file.
-    #[cfg_attr(feature = "asset_processing", serde(skip))]
-    pub visible_layer_names: Vec<LayerId>,
+    pub layers: Vec<LayerEntry>,
 }
 
 impl Aseprite {
@@ -62,6 +62,39 @@ impl Aseprite {
             return self.frame_indicies.last().cloned().unwrap_or_default();
         }
         self.frame_indicies[frame]
+    }
+
+    /// All layer IDs in front-to-back order.
+    pub fn layer_ids(&self) -> impl Iterator<Item = LayerId> + '_ {
+        self.layers.iter().map(|e| e.id)
+    }
+
+    /// Layer IDs that are currently marked visible, in front-to-back order.
+    pub fn visible_layer_ids(&self) -> impl Iterator<Item = LayerId> + '_ {
+        self.layers.iter().filter(|e| e.visible).map(|e| e.id)
+    }
+
+    /// Set visibility for a layer by name. Returns `true` if the layer was found.
+    pub fn set_layer_visible(&mut self, id: LayerId, visible: bool) -> bool {
+        if let Some(entry) = self.layers.iter_mut().find(|e| e.id == id) {
+            entry.visible = visible;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Move the layer with the given ID to a new index (front-to-back).
+    /// Returns `true` if the layer was found and moved.
+    pub fn reorder_layer(&mut self, id: LayerId, new_index: usize) -> bool {
+        if let Some(old) = self.layers.iter().position(|e| e.id == id) {
+            let entry = self.layers.remove(old);
+            let idx = new_index.min(self.layers.len());
+            self.layers.insert(idx, entry);
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -236,16 +269,12 @@ impl AssetLoader for AsepriteLoader {
         )?;
 
         // ----------------------------- per-layer renders
-        let mut layer_names: Vec<LayerId> = Vec::new();
-        let mut visible_layer_names: Vec<LayerId> = Vec::new();
+        let mut layer_entries: Vec<LayerEntry> = Vec::new();
         let mut per_layer_ids: Vec<(LayerId, Vec<AssetId<Image>>)> = Vec::new();
 
         for layer in raw.layers() {
             let layer_id = LayerId::new(&layer.name);
-            layer_names.push(layer_id);
-            if layer.visible {
-                visible_layer_names.push(layer_id);
-            }
+            layer_entries.push(LayerEntry::new(layer_id, layer.visible));
 
             let selection = raw.select_layers_by_name(&[&layer.name]);
             let ids = render_frames(
@@ -256,6 +285,11 @@ impl AssetLoader for AsepriteLoader {
             )?;
             per_layer_ids.push((layer_id, ids));
         }
+
+        // Aseprite stores layers bottom-to-top; reverse so index 0 = topmost
+        // layer in the editor (renders in front), matching Aseprite's visual
+        // stacking order.
+        layer_entries.reverse();
 
         // ----------------------------- build shared atlas
         let mut atlas_builder = TextureAtlasBuilder::default();
@@ -419,8 +453,7 @@ impl AssetLoader for AsepriteLoader {
                 atlas_image: atlas_image.clone(),
                 frame_indicies: all_indicies,
                 source_path: source_path.clone(),
-                layer_names: layer_names.clone(),
-                visible_layer_names: visible_layer_names.clone(),
+                layers: layer_entries.clone(),
             },
         );
 
@@ -436,8 +469,7 @@ impl AssetLoader for AsepriteLoader {
                     atlas_image: atlas_image.clone(),
                     frame_indicies: layer_indicies,
                     source_path: source_path.clone(),
-                    layer_names: layer_names.clone(),
-                    visible_layer_names: visible_layer_names.clone(),
+                    layers: layer_entries.clone(),
                 },
             );
         }
@@ -451,8 +483,7 @@ impl AssetLoader for AsepriteLoader {
             atlas_image,
             frame_indicies: composite_indicies,
             source_path,
-            layer_names,
-            visible_layer_names,
+            layers: layer_entries,
         })
     }
 
