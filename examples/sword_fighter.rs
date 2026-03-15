@@ -9,11 +9,7 @@
 //   [2] Toggle Swoosh visibility
 //   [3] Swap layer order (Character ↔ Swoosh)
 
-use bevy::{
-    color::palettes::css,
-    image::ImageSamplerDescriptor,
-    prelude::*,
-};
+use bevy::{color::palettes::css, image::ImageSamplerDescriptor, prelude::*};
 use bevy_aseprite_ultra::prelude::*;
 
 fn main() {
@@ -58,8 +54,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
 
     cmd.spawn((
         AseTexture::new(server.load("sword_fighter.aseprite")).sprite(),
-        AseAnimation::default()
-            .with_repeat(AnimationRepeat::Loop),
+        AseAnimation::default().with_repeat(AnimationRepeat::Loop),
         SwordFighter,
     ));
 
@@ -104,8 +99,9 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
 fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut state: ResMut<SwordFighterState>,
-    mut fighters: Query<(&mut AseAnimation, &SpriteLayers), With<SwordFighter>>,
-    mut layer_children: Query<(&LayerId, &mut Visibility, &mut Transform), With<SpriteLayerOf>>,
+    mut fighters: Query<(&mut AseAnimation, &mut AseTexture, &SpriteLayers), With<SwordFighter>>,
+    mut layer_children: Query<(&LayerId, &mut Visibility), With<SpriteLayerOf>>,
+    assets: Res<Assets<Aseprite>>,
     mut hint: Query<&mut Text, With<HintText>>,
 ) {
     let swoosh = LayerId::new("Swoosh");
@@ -114,7 +110,7 @@ fn handle_input(
     // [1] Start / Stop
     if keys.just_pressed(KeyCode::Digit1) {
         state.playing = !state.playing;
-        for (mut anim, _) in &mut fighters {
+        for (mut anim, _, _) in &mut fighters {
             if state.playing {
                 anim.start();
             } else {
@@ -124,12 +120,12 @@ fn handle_input(
         changed = true;
     }
 
-    // [2] Toggle Swoosh visibility
+    // [2] Toggle Swoosh visibility via child Visibility component
     if keys.just_pressed(KeyCode::Digit2) {
         state.swoosh_visible = !state.swoosh_visible;
-        for (_, layers) in &fighters {
+        for (_, _, layers) in &fighters {
             for child in layers.iter() {
-                if let Ok((id, mut vis, _)) = layer_children.get_mut(child) {
+                if let Ok((id, mut vis)) = layer_children.get_mut(child) {
                     if *id == swoosh {
                         *vis = if state.swoosh_visible {
                             Visibility::Inherited
@@ -143,25 +139,16 @@ fn handle_input(
         changed = true;
     }
 
-    // [3] Swap layer order
+    // [3] Swap layer order via per-entity layer_order override
     if keys.just_pressed(KeyCode::Digit3) {
         state.layers_swapped = !state.layers_swapped;
-        for (_, layers) in &fighters {
-            // Collect current z values, then swap them
-            let mut entries: Vec<(Entity, f32)> = Vec::new();
-            for child in layers.iter() {
-                if let Ok((_, _, transform)) = layer_children.get(child) {
-                    entries.push((child, transform.translation.z));
-                }
-            }
-            if entries.len() == 2 {
-                let z0 = entries[0].1;
-                let z1 = entries[1].1;
-                if let Ok((_, _, mut t)) = layer_children.get_mut(entries[0].0) {
-                    t.translation.z = z1;
-                }
-                if let Ok((_, _, mut t)) = layer_children.get_mut(entries[1].0) {
-                    t.translation.z = z0;
+        for (_, mut tex, _) in &mut fighters {
+            if let Some(aseprite) = assets.get(&tex.aseprite) {
+                // Reset to asset base order, then reorder if swapped
+                tex.layer_order = None;
+                tex.init_layer_order_from(aseprite);
+                if state.layers_swapped {
+                    tex.reorder_layer(swoosh, 0);
                 }
             }
         }
@@ -172,8 +159,16 @@ fn handle_input(
         let status = format!(
             "{} | Swoosh: {} | Order: {}",
             if state.playing { "Playing" } else { "Paused" },
-            if state.swoosh_visible { "visible" } else { "hidden" },
-            if state.layers_swapped { "swapped" } else { "normal" },
+            if state.swoosh_visible {
+                "visible"
+            } else {
+                "hidden"
+            },
+            if state.layers_swapped {
+                "swapped"
+            } else {
+                "normal"
+            },
         );
         for mut text in &mut hint {
             **text = status.clone();

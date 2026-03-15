@@ -143,6 +143,8 @@ pub struct SpriteLayers(Vec<Entity>);
 #[derive(Component, Clone, Debug)]
 #[require(Visibility)]
 #[require(InheritedVisibility)]
+#[require(ViewVisibility)]
+#[require(Transform)]
 pub struct AseTexture {
     pub aseprite: Handle<Aseprite>,
     pub layers: LayerFilter,
@@ -152,6 +154,11 @@ pub struct AseTexture {
     /// Offset applied relatively to child render entities' transforms (Sprite)
     /// or node positions (UI).
     pub offset: Vec2,
+    /// Per-entity layer order override. When `Some`, layers are z-ordered
+    /// according to this list (index 0 = front, renders on top) instead of
+    /// the asset's default order. Layers not in this list keep their
+    /// asset-default z-position. Set to `None` to use the asset order.
+    pub layer_order: Option<Vec<LayerId>>,
 }
 
 impl AseTexture {
@@ -164,6 +171,7 @@ impl AseTexture {
             baked: false,
             render_target: RenderTarget::Sprite,
             offset: default(),
+            layer_order: None,
         }
     }
 
@@ -176,6 +184,7 @@ impl AseTexture {
             baked: true,
             render_target: RenderTarget::Sprite,
             offset: default(),
+            layer_order: None,
         }
     }
 
@@ -213,6 +222,39 @@ impl AseTexture {
     pub fn with_offset(mut self, offset: Vec2) -> Self {
         self.offset = offset;
         self
+    }
+
+    /// Set a per-entity layer order override. Layers are ordered front-to-back
+    /// (index 0 = topmost, renders in front). Only affects this entity's
+    /// z-ordering, not the underlying asset.
+    pub fn with_layer_order(mut self, order: Vec<LayerId>) -> Self {
+        self.layer_order = Some(order);
+        self
+    }
+
+    /// Override the z-order for a single layer on this entity.
+    ///
+    /// Moves the layer to `new_index` in the per-entity order list
+    /// (0 = front). Initialises the override from the asset's default
+    /// order on first call.
+    ///
+    /// Mutating `AseTexture` triggers the z-reorder system.
+    pub fn reorder_layer(&mut self, layer: LayerId, new_index: usize) {
+        let order = self.layer_order.get_or_insert_with(Vec::new);
+        if let Some(old) = order.iter().position(|id| *id == layer) {
+            let entry = order.remove(old);
+            let idx = new_index.min(order.len());
+            order.insert(idx, entry);
+        }
+    }
+
+    /// Initialise `layer_order` from the asset's layer list if not already set.
+    /// Call this before [`reorder_layer`](Self::reorder_layer) when you need
+    /// the override list pre-populated with the asset's default order.
+    pub fn init_layer_order_from(&mut self, aseprite: &Aseprite) {
+        if self.layer_order.is_none() {
+            self.layer_order = Some(aseprite.layer_ids().collect());
+        }
     }
 
     /// Show a layer. Adds it to the [`LayerFilter::Include`] list if not
@@ -334,9 +376,9 @@ fn spawn_layers_on_asset_load(
 /// Updates children when [`AseTexture`] changes.
 ///
 /// In layered mode (non-baked): all layer children are always kept alive.
-/// Only their [`Visibility`] is toggled based on the current filter. This
-/// avoids entity churn when the filter changes rapidly, and z-ordering never
-/// needs to be recalculated.
+/// Their [`Visibility`] is toggled based on the current filter and z-ordering
+/// is updated from the per-entity [`layer_order`](AseTexture::layer_order)
+/// override (or asset default).
 ///
 /// A full respawn only happens when the underlying aseprite asset changes
 /// (different layer set detected).
@@ -347,6 +389,8 @@ fn update_layers(
         Changed<AseTexture>,
     >,
     layer_ids: Query<&LayerId, With<SpriteLayerOf>>,
+    mut transforms: Query<&mut Transform, With<SpriteLayerOf>>,
+    mut z_indices: Query<&mut ZIndex, With<SpriteLayerOf>>,
     assets: Res<Assets<Aseprite>>,
     server: Res<AssetServer>,
 ) {
@@ -361,7 +405,7 @@ fn update_layers(
             }
             spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, has_anim, flip);
         } else {
-            let all_layers = &aseprite.layer_ids().collect::<Vec<_>>();
+            let all_layers: Vec<LayerId> = aseprite.layer_ids().collect();
 
             // Check whether existing children exactly match the aseprite's full
             // layer set. If not (e.g. aseprite handle changed), do a full respawn.
@@ -382,8 +426,11 @@ fn update_layers(
                 }
                 spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, has_anim, flip);
             } else {
-                // Fast path: only toggle visibility, no spawning or z-reordering.
+                // Fast path: toggle visibility and reapply z-ordering.
                 let visible = visible_layers(aseprite, &tex.layers);
+                let order = tex.layer_order.as_deref().unwrap_or(&all_layers);
+                let total = all_layers.len();
+
                 for child in sprite_layers.iter() {
                     if let Ok(id) = layer_ids.get(child) {
                         let vis = if visible.contains(id) {
@@ -392,6 +439,25 @@ fn update_layers(
                             Visibility::Hidden
                         };
                         cmd.entity(child).insert(vis);
+
+                        let z = order
+                            .iter()
+                            .position(|oid| oid == id)
+                            .map(|idx| z_from_index(idx, total))
+                            .unwrap_or(0);
+
+                        match &tex.render_target {
+                            RenderTarget::Sprite => {
+                                if let Ok(mut transform) = transforms.get_mut(child) {
+                                    transform.translation.z = z as f32 * 0.001;
+                                }
+                            }
+                            RenderTarget::Ui => {
+                                if let Ok(mut zi) = z_indices.get_mut(child) {
+                                    zi.0 = z as i32;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -472,6 +538,8 @@ fn spawn_children(
     } else {
         // Spawn ALL layers; visibility is determined by the filter.
         let visible = visible_layers(aseprite, &tex.layers);
+        let default_order: Vec<LayerId> = aseprite.layer_ids().collect();
+        let order = tex.layer_order.as_deref().unwrap_or(&default_order);
         spawn_layered_children(
             cmd,
             server,
@@ -480,7 +548,8 @@ fn spawn_children(
             aseprite,
             tex,
             has_anim,
-            &aseprite.layer_ids().collect::<Vec<_>>(),
+            &default_order,
+            order,
             &visible,
             flip,
         );
@@ -574,12 +643,11 @@ fn spawn_baked_child(
 
 /// Spawns one child entity per layer.
 ///
-/// `layers` is the full ordered layer list (determines z-ordering and which
-/// entities are created). `visible` is the subset that should start with
-/// [`Visibility::Inherited`]; all others get [`Visibility::Hidden`].
-///
-/// Z-ordering is computed once here from the layer's position in `layers` and
-/// never recalculated, since all layers are always present.
+/// `layers` is the full layer list (determines which entities are created).
+/// `order` is the front-to-back ordering used for z-computation (may differ
+/// from `layers` when a per-entity `layer_order` override is set).
+/// `visible` is the subset that should start with [`Visibility::Inherited`];
+/// all others get [`Visibility::Hidden`].
 fn spawn_layered_children(
     cmd: &mut Commands,
     server: &AssetServer,
@@ -589,12 +657,17 @@ fn spawn_layered_children(
     tex: &AseTexture,
     has_anim: bool,
     layers: &[LayerId],
+    order: &[LayerId],
     visible: &[LayerId],
     flip: Option<&AseFlip>,
 ) {
     let total = layers.len();
-    for (idx, &layer_id) in layers.iter().enumerate() {
-        let z = z_from_index(idx, total);
+    for &layer_id in layers.iter() {
+        let z = order
+            .iter()
+            .position(|id| *id == layer_id)
+            .map(|idx| z_from_index(idx, total))
+            .unwrap_or(0);
         let visibility = if visible.contains(&layer_id) {
             Visibility::Inherited
         } else {

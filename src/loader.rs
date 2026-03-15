@@ -74,7 +74,12 @@ impl Aseprite {
         self.layers.iter().filter(|e| e.visible).map(|e| e.id)
     }
 
-    /// Set visibility for a layer by name. Returns `true` if the layer was found.
+    /// Set visibility for a layer by name on the **asset** (affects all entities).
+    /// For per-entity visibility, use
+    /// [`AseTexture::toggle_layer_on`](crate::layers::AseTexture::toggle_layer_on) /
+    /// [`toggle_layer_off`](crate::layers::AseTexture::toggle_layer_off) instead.
+    ///
+    /// Returns `true` if the layer was found.
     pub fn set_layer_visible(&mut self, id: LayerId, visible: bool) -> bool {
         if let Some(entry) = self.layers.iter_mut().find(|e| e.id == id) {
             entry.visible = visible;
@@ -85,6 +90,14 @@ impl Aseprite {
     }
 
     /// Move the layer with the given ID to a new index (front-to-back).
+    /// Index 0 = topmost layer (renders in front).
+    ///
+    /// This modifies the **asset** directly, affecting all entities that
+    /// reference it. For per-entity overrides, use
+    /// [`AseTexture::layer_order`](crate::layers::AseTexture::layer_order) or
+    /// [`AseTexture::reorder_layer`](crate::layers::AseTexture::reorder_layer)
+    /// instead.
+    ///
     /// Returns `true` if the layer was found and moved.
     pub fn reorder_layer(&mut self, id: LayerId, new_index: usize) -> bool {
         if let Some(old) = self.layers.iter().position(|e| e.id == id) {
@@ -287,8 +300,7 @@ impl AssetLoader for AsepriteLoader {
         }
 
         // Aseprite stores layers bottom-to-top; reverse so index 0 = topmost
-        // layer in the editor (renders in front), matching Aseprite's visual
-        // stacking order.
+        // layer in the editor (front-to-back order).
         layer_entries.reverse();
 
         // ----------------------------- build shared atlas

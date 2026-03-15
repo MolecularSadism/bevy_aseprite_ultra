@@ -313,42 +313,19 @@ layer in the Aseprite editor and renders in front. In layered mode, **all**
 layers from the file are always spawned as children, regardless of the
 `LayerFilter`. The filter only controls which children are visible
 (`Visibility::Inherited` vs `Visibility::Hidden`), not which entities
-exist. This avoids entity churn when toggling visibility and keeps
-z-ordering stable (assigned once at spawn, never recalculated).
+exist. This avoids entity churn when toggling visibility.
 
 For sprite children, z-order is applied via small `Transform` z-offsets
 (`z * 0.001`). For UI children, `ZIndex` is used instead.
 
-### Runtime Layer Control
+### Runtime Layer Visibility
 
-Toggle layers on and off at runtime using the convenience methods on
-`AseTexture`. These only work when the filter is `LayerFilter::Include`:
-
-```rust
-# use bevy::prelude::*;
-# use bevy_aseprite_ultra::prelude::*;
-fn toggle_armor(mut query: Query<&mut AseTexture>) {
-    for mut tex in &mut query {
-        // Switch to Include filter if not already
-        tex.layers = LayerFilter::Include(vec![
-            LayerId::new("body"),
-        ]);
-
-        // Show armor
-        tex.toggle_layer_on(LayerId::new("armor"));
-
-        // Hide armor
-        tex.toggle_layer_off(LayerId::new("armor"));
-    }
-}
-```
-
-You can also query child entities directly and toggle their `Visibility`:
+Toggle layer visibility by querying child entities directly:
 
 ```rust
 # use bevy::prelude::*;
 # use bevy_aseprite_ultra::prelude::*;
-fn hide_layer_directly(
+fn toggle_armor(
     parents: Query<&SpriteLayers>,
     mut children: Query<(&LayerId, &mut Visibility)>,
 ) {
@@ -364,24 +341,81 @@ fn hide_layer_directly(
 }
 ```
 
-### Reordering Layers at Runtime
-
-The `Aseprite` asset itself exposes methods for reordering layers and
-toggling file-level visibility. Changes here affect all entities using
-that asset:
+When using `LayerFilter::Include`, you can also use `toggle_layer_on` /
+`toggle_layer_off` on `AseTexture`:
 
 ```rust
 # use bevy::prelude::*;
 # use bevy_aseprite_ultra::prelude::*;
-fn reorder(mut assets: ResMut<Assets<Aseprite>>) {
-    for (_id, aseprite) in assets.iter_mut() {
-        // Move "hat" to the front (index 0 = topmost)
-        aseprite.reorder_layer(LayerId::new("hat"), 0);
-
-        // Toggle a layer's file-level visibility
-        aseprite.set_layer_visible(LayerId::new("shadow"), false);
+fn toggle_armor(mut query: Query<&mut AseTexture>) {
+    for mut tex in &mut query {
+        tex.toggle_layer_on(LayerId::new("armor"));
+        tex.toggle_layer_off(LayerId::new("helmet"));
     }
 }
+```
+
+### Reordering Layers at Runtime
+
+Override z-order per-entity with the `layer_order` field on `AseTexture`.
+This is a front-to-back list (index 0 = renders on top) that overrides
+the asset's default order for this entity only:
+
+```rust
+# use bevy::prelude::*;
+# use bevy_aseprite_ultra::prelude::*;
+fn swap_layers(
+    mut query: Query<&mut AseTexture>,
+    assets: Res<Assets<Aseprite>>,
+) {
+    for mut tex in &mut query {
+        // Initialise from asset defaults on first use
+        if let Some(aseprite) = assets.get(&tex.aseprite) {
+            tex.init_layer_order_from(aseprite);
+        }
+
+        // Set a custom front-to-back order
+        tex.layer_order = Some(vec![
+            LayerId::new("swoosh"),
+            LayerId::new("body"),
+        ]);
+
+        // Or move a single layer with reorder_layer
+        tex.reorder_layer(LayerId::new("hat"), 0); // move to front
+    }
+}
+```
+
+To modify the order globally on the asset itself (affecting all entities
+that use it), use `Aseprite::reorder_layer`:
+
+```rust
+# use bevy::prelude::*;
+# use bevy_aseprite_ultra::prelude::*;
+fn reorder_on_asset(mut assets: ResMut<Assets<Aseprite>>) {
+    for (_, aseprite) in assets.iter_mut() {
+        aseprite.reorder_layer(LayerId::new("swoosh"), 0); // move to front
+    }
+}
+```
+
+You can also set `layer_order` at spawn time via the builder:
+
+```rust
+# use bevy::prelude::*;
+# use bevy_aseprite_ultra::prelude::*;
+# fn example(mut cmd: Commands, server: Res<AssetServer>) {
+cmd.spawn((
+    AseTexture::new(server.load("character.aseprite"))
+        .with_layer_order(vec![
+            LayerId::new("weapon"),
+            LayerId::new("body"),
+            LayerId::new("shadow"),
+        ])
+        .sprite(),
+    AseAnimation::tag("idle"),
+));
+# }
 ```
 
 ### Flipping
@@ -496,6 +530,7 @@ cargo run --example move_player
 cargo run --example manual
 cargo run --example queue
 cargo run --example shader
+cargo run --example sword_fighter
 cargo run --example 3d --features 3d
 cargo run --example asset_processing --features asset_processing
 ```
