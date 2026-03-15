@@ -1,6 +1,7 @@
 use crate::animation::{AseAnimation, AnimationLayer};
 use crate::loader::Aseprite;
 use crate::slice::AseSlice;
+use bevy::image::TextureAtlas;
 use bevy::prelude::*;
 use bevy::ui::widget::ImageNode;
 use msg_interned_id::InternedId;
@@ -20,10 +21,11 @@ pub struct AsepriteLayersPlugin;
 
 impl Plugin for AsepriteLayersPlugin {
     fn build(&self, app: &mut App) {
+        app.add_observer(on_ase_texture_added);
         app.add_systems(
             PreUpdate,
             (
-                spawn_layers,
+                spawn_layers_on_asset_load,
                 update_layers,
                 propagate_flip,
                 propagate_offset,
@@ -246,19 +248,49 @@ fn z_from_index(index: usize, total: usize) -> usize {
     total.saturating_sub(1).saturating_sub(index)
 }
 
-/// Spawns child entities for newly added [`AseTexture`] components.
-fn spawn_layers(
+/// Observer that fires when [`AseTexture`] is added. Spawns children immediately
+/// if the asset is already loaded, eliminating the 1-frame lag from the old
+/// polling approach.
+fn on_ase_texture_added(
+    trigger: On<Add, AseTexture>,
     mut cmd: Commands,
+    query: Query<(&AseTexture, Has<AseAnimation>, Option<&AseFlip>)>,
+    assets: Res<Assets<Aseprite>>,
+    server: Res<AssetServer>,
+) {
+    let entity = trigger.entity;
+    let Ok((tex, has_anim, flip)) = query.get(entity) else {
+        return;
+    };
+    let Some(aseprite) = assets.get(&tex.aseprite) else {
+        return; // Asset not loaded yet; spawn_layers_on_asset_load will handle it.
+    };
+
+    spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, has_anim, flip);
+}
+
+/// Spawns children for entities whose asset was not yet loaded when the
+/// [`on_ase_texture_added`] observer fired. Only runs when an asset finishes
+/// loading, not every frame.
+fn spawn_layers_on_asset_load(
+    mut cmd: Commands,
+    mut events: MessageReader<AssetEvent<Aseprite>>,
     query: Query<(Entity, &AseTexture, Has<AseAnimation>, Option<&AseFlip>), Without<SpriteLayers>>,
     assets: Res<Assets<Aseprite>>,
     server: Res<AssetServer>,
 ) {
-    for (entity, tex, has_anim, flip) in &query {
-        let Some(aseprite) = assets.get(&tex.aseprite) else {
+    for event in events.read() {
+        let AssetEvent::LoadedWithDependencies { id } = event else {
             continue;
         };
-
-        spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim, flip);
+        for (entity, tex, has_anim, flip) in &query {
+            if tex.aseprite.id() == *id {
+                let Some(aseprite) = assets.get(&tex.aseprite) else {
+                    continue;
+                };
+                spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, has_anim, flip);
+            }
+        }
     }
 }
 
@@ -282,7 +314,7 @@ fn update_layers(
             for child in sprite_layers.iter() {
                 cmd.entity(child).despawn();
             }
-            spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim, flip);
+            spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, has_anim, flip);
         } else {
             let desired = matching_layers(aseprite, &tex.layers);
 
@@ -302,7 +334,7 @@ fn update_layers(
             }
 
             if has_non_layer_children {
-                spawn_children(&mut cmd, &server, entity, aseprite, tex, has_anim, flip);
+                spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, has_anim, flip);
             } else {
                 // Update z-ordering on retained children.
                 let total = desired.len();
@@ -332,7 +364,7 @@ fn update_layers(
 
                 if !to_spawn.is_empty() {
                     spawn_layered_children(
-                        &mut cmd, &server, entity, aseprite, tex, has_anim, &to_spawn, &desired, flip,
+                        &mut cmd, &server, &assets, entity, aseprite, tex, has_anim, &to_spawn, &desired, flip,
                     );
                 }
             }
@@ -401,6 +433,7 @@ fn propagate_offset(
 fn spawn_children(
     cmd: &mut Commands,
     server: &AssetServer,
+    assets: &Assets<Aseprite>,
     parent: Entity,
     aseprite: &Aseprite,
     tex: &AseTexture,
@@ -408,16 +441,17 @@ fn spawn_children(
     flip: Option<&AseFlip>,
 ) {
     if tex.baked {
-        spawn_baked_child(cmd, parent, tex, has_anim, flip);
+        spawn_baked_child(cmd, parent, aseprite, tex, has_anim, flip);
     } else {
         let layers = matching_layers(aseprite, &tex.layers);
-        spawn_layered_children(cmd, server, parent, aseprite, tex, has_anim, &layers, &layers, flip);
+        spawn_layered_children(cmd, server, assets, parent, aseprite, tex, has_anim, &layers, &layers, flip);
     }
 }
 
 fn spawn_baked_child(
     cmd: &mut Commands,
     parent: Entity,
+    aseprite: &Aseprite,
     tex: &AseTexture,
     has_anim: bool,
     flip: Option<&AseFlip>,
@@ -430,7 +464,14 @@ fn spawn_baked_child(
 
     match &tex.render_target {
         RenderTarget::Sprite => {
-            let mut sprite = Sprite::default();
+            let mut sprite = Sprite {
+                image: aseprite.atlas_image.clone(),
+                texture_atlas: Some(TextureAtlas {
+                    layout: aseprite.atlas_layout.clone(),
+                    index: aseprite.get_atlas_index(0),
+                }),
+                ..default()
+            };
             if let Some(flip) = flip {
                 sprite.flip_x = flip.x;
                 sprite.flip_y = flip.y;
@@ -453,7 +494,14 @@ fn spawn_baked_child(
             }
         }
         RenderTarget::Ui => {
-            let mut node = ImageNode::default();
+            let mut node = ImageNode {
+                image: aseprite.atlas_image.clone(),
+                texture_atlas: Some(TextureAtlas {
+                    layout: aseprite.atlas_layout.clone(),
+                    index: aseprite.get_atlas_index(0),
+                }),
+                ..default()
+            };
             if let Some(flip) = flip {
                 node.flip_x = flip.x;
                 node.flip_y = flip.y;
@@ -488,6 +536,7 @@ fn spawn_baked_child(
 fn spawn_layered_children(
     cmd: &mut Commands,
     server: &AssetServer,
+    assets: &Assets<Aseprite>,
     parent: Entity,
     aseprite: &Aseprite,
     tex: &AseTexture,
@@ -503,6 +552,10 @@ fn spawn_layered_children(
         let layer_path = format!("{}#{}", aseprite.source_path, layer_id.as_str());
         let layer_handle: Handle<Aseprite> = server.load(&layer_path);
 
+        // Pre-populate with per-layer asset data if available, else fall back
+        // to the parent asset (same atlas, different frame indices).
+        let layer_ase = assets.get(&layer_handle).unwrap_or(aseprite);
+
         let common = (
             ChildOf(parent),
             SpriteLayerOf(parent),
@@ -512,7 +565,14 @@ fn spawn_layered_children(
 
         match &tex.render_target {
             RenderTarget::Sprite => {
-                let mut sprite = Sprite::default();
+                let mut sprite = Sprite {
+                    image: layer_ase.atlas_image.clone(),
+                    texture_atlas: Some(TextureAtlas {
+                        layout: layer_ase.atlas_layout.clone(),
+                        index: layer_ase.get_atlas_index(0),
+                    }),
+                    ..default()
+                };
                 if let Some(flip) = flip {
                     sprite.flip_x = flip.x;
                     sprite.flip_y = flip.y;
@@ -535,14 +595,18 @@ fn spawn_layered_children(
                 }
             }
             RenderTarget::Ui => {
-                let mut node = ImageNode::default();
+                let mut node = ImageNode {
+                    image: layer_ase.atlas_image.clone(),
+                    texture_atlas: Some(TextureAtlas {
+                        layout: layer_ase.atlas_layout.clone(),
+                        index: layer_ase.get_atlas_index(0),
+                    }),
+                    ..default()
+                };
                 if let Some(flip) = flip {
                     node.flip_x = flip.x;
                     node.flip_y = flip.y;
                 }
-                #[cfg(not(feature = "3d"))]
-                let (left, top) = (tex.offset.x, tex.offset.y);
-                #[cfg(feature = "3d")]
                 let (left, top) = (tex.offset.x, tex.offset.y);
                 let mut entity_cmd = cmd.spawn((
                     common,
