@@ -306,20 +306,81 @@ cmd.spawn(
 # }
 ```
 
+### Layer Ordering (Z-Order)
+
+Layers are stored in **front-to-back order** — index 0 is the topmost
+layer in the Aseprite editor and renders in front. In layered mode, **all**
+layers from the file are always spawned as children, regardless of the
+`LayerFilter`. The filter only controls which children are visible
+(`Visibility::Inherited` vs `Visibility::Hidden`), not which entities
+exist. This avoids entity churn when toggling visibility and keeps
+z-ordering stable (assigned once at spawn, never recalculated).
+
+For sprite children, z-order is applied via small `Transform` z-offsets
+(`z * 0.001`). For UI children, `ZIndex` is used instead.
+
 ### Runtime Layer Control
 
-Mutating the `layers` field at runtime diffs existing children — only
-changed layers are spawned or despawned. You can also toggle individual
-layer visibility via the `Visibility` component on child entities:
+Toggle layers on and off at runtime using the convenience methods on
+`AseTexture`. These only work when the filter is `LayerFilter::Include`:
 
 ```rust
 # use bevy::prelude::*;
 # use bevy_aseprite_ultra::prelude::*;
-fn toggle_armor(
-    query: Query<&SpriteLayers>,
-    children_query: Query<(&LayerId, &mut Visibility)>,
+fn toggle_armor(mut query: Query<&mut AseTexture>) {
+    for mut tex in &mut query {
+        // Switch to Include filter if not already
+        tex.layers = LayerFilter::Include(vec![
+            LayerId::new("body"),
+        ]);
+
+        // Show armor
+        tex.toggle_layer_on(LayerId::new("armor"));
+
+        // Hide armor
+        tex.toggle_layer_off(LayerId::new("armor"));
+    }
+}
+```
+
+You can also query child entities directly and toggle their `Visibility`:
+
+```rust
+# use bevy::prelude::*;
+# use bevy_aseprite_ultra::prelude::*;
+fn hide_layer_directly(
+    parents: Query<&SpriteLayers>,
+    mut children: Query<(&LayerId, &mut Visibility)>,
 ) {
-    // each child has a LayerId you can match against
+    for layers in &parents {
+        for child in layers.iter() {
+            if let Ok((id, mut vis)) = children.get_mut(child) {
+                if id.as_str() == "armor" {
+                    *vis = Visibility::Hidden;
+                }
+            }
+        }
+    }
+}
+```
+
+### Reordering Layers at Runtime
+
+The `Aseprite` asset itself exposes methods for reordering layers and
+toggling file-level visibility. Changes here affect all entities using
+that asset:
+
+```rust
+# use bevy::prelude::*;
+# use bevy_aseprite_ultra::prelude::*;
+fn reorder(mut assets: ResMut<Assets<Aseprite>>) {
+    for (_id, aseprite) in assets.iter_mut() {
+        // Move "hat" to the front (index 0 = topmost)
+        aseprite.reorder_layer(LayerId::new("hat"), 0);
+
+        // Toggle a layer's file-level visibility
+        aseprite.set_layer_visible(LayerId::new("shadow"), false);
+    }
 }
 ```
 
