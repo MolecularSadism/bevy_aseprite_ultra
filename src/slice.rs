@@ -2,8 +2,30 @@ use crate::animation::AnimationState;
 use crate::layers::SpriteLayerOf;
 use crate::loader::{Aseprite, SliceMeta};
 use bevy::{
-    ecs::component::Mutable, prelude::*, sprite::Anchor, sprite_render::Material2d, ui::UiSystems,
+    ecs::component::Mutable,
+    prelude::*,
+    sprite::{Anchor, BorderRect, TextureSlicer},
+    sprite_render::Material2d,
+    ui::{widget::NodeImageMode, UiSystems},
 };
+
+/// Convert aseprite 9-patch data to a Bevy [`TextureSlicer`].
+///
+/// Aseprite stores the center rectangle as `Vec4(x, y, width, height)` relative
+/// to the slice origin. Bevy needs border insets from each edge.
+pub fn nine_patch_to_slicer(nine_patch: Vec4, slice_size: Vec2) -> TextureSlicer {
+    let left = nine_patch.x;
+    let top = nine_patch.y;
+    let right = slice_size.x - nine_patch.x - nine_patch.z;
+    let bottom = slice_size.y - nine_patch.y - nine_patch.w;
+    TextureSlicer {
+        border: BorderRect {
+            min_inset: Vec2::new(left, top),
+            max_inset: Vec2::new(right, bottom),
+        },
+        ..default()
+    }
+}
 
 pub struct AsepriteSlicePlugin;
 
@@ -62,6 +84,12 @@ impl RenderSlice for ImageNode {
             layout: aseprite.atlas_layout.clone(),
             index: slice_meta.atlas_id,
         });
+        if let Some(np) = slice_meta.nine_patch {
+            self.image_mode = NodeImageMode::Sliced(nine_patch_to_slicer(
+                np,
+                slice_meta.rect.size(),
+            ));
+        }
     }
 }
 
@@ -73,6 +101,12 @@ impl RenderSlice for Sprite {
             layout: aseprite.atlas_layout.clone(),
             index: slice_meta.atlas_id,
         });
+        if let Some(np) = slice_meta.nine_patch {
+            self.image_mode = SpriteImageMode::Sliced(nine_patch_to_slicer(
+                np,
+                slice_meta.rect.size(),
+            ));
+        }
     }
 }
 

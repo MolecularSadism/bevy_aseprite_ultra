@@ -23,7 +23,7 @@ pub mod prelude {
         SpriteLayerOf, SpriteLayers,
     };
     pub use crate::loader::{Aseprite, AsepriteLoaderPlugin, AsepriteLoaderSettings, SliceMeta};
-    pub use crate::slice::{render_slice, AseSlice, RenderSlice};
+    pub use crate::slice::{nine_patch_to_slicer, render_slice, AseSlice, RenderSlice};
     pub use crate::AsepriteUltraPlugin;
 }
 
