@@ -1,4 +1,4 @@
-## 0.3.0
+## 0.9.0
 
 - updated to bevy 0.18.
 - **9-slice support**: slices with 9-patch data now automatically apply `SpriteImageMode::Sliced` / `NodeImageMode::Sliced` to Sprite and ImageNode targets. Use `nine_patch_to_slicer` for custom overrides.
