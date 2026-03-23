@@ -1,7 +1,11 @@
-## WIP
+## 0.3.0
 
+- updated to bevy 0.18.
+- **9-slice support**: slices with 9-patch data now automatically apply `SpriteImageMode::Sliced` / `NodeImageMode::Sliced` to Sprite and ImageNode targets. Use `nine_patch_to_slicer` for custom overrides.
+- **z-order layer priority**: layers are stored as `Vec<LayerEntry>` in front-to-back order. Reorder layers per-entity via `AseTexture::layer_order` / `reorder_layer`, or globally via `Aseprite::reorder_layer`.
 - optimized slice rendering.
-- updated to bevy 0.18;
+- observer-based child spawning (fixes 1-frame sprite lag).
+- layer switching uses visibility toggling instead of entity churn.
 
 ## 0.6.1
 
