@@ -342,11 +342,17 @@ fn on_ase_texture_added(
     };
 
     // Sprite parents need Transform + GlobalTransform for world-space rendering.
-    // UI parents get these from Node (user-provided), so we only insert for sprites.
-    // insert_if_new preserves any user-supplied Transform.
-    if matches!(tex.render_target, RenderTarget::Sprite) {
-        cmd.entity(entity)
-            .insert_if_new((Transform::default(), GlobalTransform::default()));
+    // UI parents need UiTransform + UiGlobalTransform for UI layout.
+    // insert_if_new preserves any user-supplied values.
+    match &tex.render_target {
+        RenderTarget::Sprite => {
+            cmd.entity(entity)
+                .insert_if_new((Transform::default(), GlobalTransform::default()));
+        }
+        RenderTarget::Ui => {
+            cmd.entity(entity)
+                .insert_if_new((UiTransform::default(), UiGlobalTransform::default()));
+        }
     }
 
     let Some(aseprite) = assets.get(&tex.aseprite) else {
