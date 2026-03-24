@@ -9,7 +9,7 @@ rendering, and custom materials.
 
 | Bevy Version | Plugin Version |
 | -----------: | -------------: |
-|         0.18 |          0.8.1 |
+|         0.18 |          0.9.0 |
 |         0.17 |          0.7.0 |
 |         0.16 |          0.6.1 |
 |         0.15 |          0.4.1 |
@@ -21,8 +21,8 @@ rendering, and custom materials.
 - Animations with tags
 - Frame duration, repeat count, and animation direction
 - Layer visibility and blend modes
-- Static slices with pivot offsets and 9-patch data
-- Per-layer sub-asset loading
+- Static slices with pivot offsets and **automatic 9-slice support**
+- Per-layer sub-asset loading with **z-order priority control**
 
 ## Bevy Features
 
