@@ -144,7 +144,6 @@ pub struct SpriteLayers(Vec<Entity>);
 #[require(Visibility)]
 #[require(InheritedVisibility)]
 #[require(ViewVisibility)]
-#[require(Transform)]
 pub struct AseTexture {
     pub aseprite: Handle<Aseprite>,
     pub layers: LayerFilter,
@@ -341,6 +340,15 @@ fn on_ase_texture_added(
     let Ok((tex, has_anim, flip)) = query.get(entity) else {
         return;
     };
+
+    // Sprite parents need Transform + GlobalTransform for world-space rendering.
+    // UI parents get these from Node (user-provided), so we only insert for sprites.
+    // insert_if_new preserves any user-supplied Transform.
+    if matches!(tex.render_target, RenderTarget::Sprite) {
+        cmd.entity(entity)
+            .insert_if_new((Transform::default(), GlobalTransform::default()));
+    }
+
     let Some(aseprite) = assets.get(&tex.aseprite) else {
         return; // Asset not loaded yet; spawn_layers_on_asset_load will handle it.
     };
