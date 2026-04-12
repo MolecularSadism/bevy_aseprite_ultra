@@ -480,16 +480,22 @@ fn update_layers(
 }
 
 /// Propagates [`AseFlip`] to children's [`Sprite`] and [`ImageNode`].
+///
+/// Also re-derives each sprite child's [`Transform`] translation from the
+/// stored [`AppliedOffset`] so the visual anchor stays correct after a flip:
+/// when `flip.x` is true, the effective x offset is negated (and likewise for y).
 fn propagate_flip(
     parents: Query<(&AseFlip, &SpriteLayers), Changed<AseFlip>>,
-    mut sprites: Query<&mut Sprite>,
+    mut sprites: Query<(&mut Sprite, &mut Transform, &AppliedOffset)>,
     mut image_nodes: Query<&mut ImageNode>,
 ) {
     for (flip, layers) in &parents {
         for child in layers.iter() {
-            if let Ok(mut sprite) = sprites.get_mut(child) {
+            if let Ok((mut sprite, mut transform, applied)) = sprites.get_mut(child) {
                 sprite.flip_x = flip.x;
                 sprite.flip_y = flip.y;
+                transform.translation.x = if flip.x { -applied.0.x } else { applied.0.x };
+                transform.translation.y = if flip.y { -applied.0.y } else { applied.0.y };
             }
             if let Ok(mut node) = image_nodes.get_mut(child) {
                 node.flip_x = flip.x;
@@ -505,21 +511,26 @@ fn propagate_flip(
 /// then adds that delta to each child's [`Transform`] (Sprite mode) or
 /// [`Node`] position (UI mode). This preserves any other positional changes
 /// made by other systems (e.g. z-ordering).
+///
+/// In Sprite mode the delta is sign-flipped when [`AseFlip`] is active so that
+/// the visual anchor tracks correctly after a flip.
 fn propagate_offset(
-    parents: Query<(&AseTexture, &SpriteLayers), Changed<AseTexture>>,
+    parents: Query<(&AseTexture, &SpriteLayers, Option<&AseFlip>), Changed<AseTexture>>,
     mut sprites: Query<(&mut Transform, &mut AppliedOffset)>,
     mut ui_nodes: Query<(&mut Node, &mut AppliedOffset), Without<Transform>>,
 ) {
-    for (tex, layers) in &parents {
+    for (tex, layers, flip) in &parents {
         let new_offset = tex.offset;
+        let flip_x = flip.map_or(false, |f| f.x);
+        let flip_y = flip.map_or(false, |f| f.y);
 
         for child in layers.iter() {
             match &tex.render_target {
                 RenderTarget::Sprite => {
                     if let Ok((mut transform, mut applied)) = sprites.get_mut(child) {
                         let delta = new_offset - applied.0;
-                        transform.translation.x += delta.x;
-                        transform.translation.y += delta.y;
+                        transform.translation.x += if flip_x { -delta.x } else { delta.x };
+                        transform.translation.y += if flip_y { -delta.y } else { delta.y };
                         applied.0 = new_offset;
                     }
                 }
@@ -598,7 +609,9 @@ fn spawn_baked_child(
                 sprite.flip_x = flip.x;
                 sprite.flip_y = flip.y;
             }
-            let offset_translation = Vec3::new(tex.offset.x, tex.offset.y, 0.);
+            let eff_x = flip.map_or(tex.offset.x, |f| if f.x { -tex.offset.x } else { tex.offset.x });
+            let eff_y = flip.map_or(tex.offset.y, |f| if f.y { -tex.offset.y } else { tex.offset.y });
+            let offset_translation = Vec3::new(eff_x, eff_y, 0.);
             let mut entity_cmd = cmd.spawn((
                 common,
                 sprite,
@@ -717,7 +730,9 @@ fn spawn_layered_children(
                     sprite.flip_x = flip.x;
                     sprite.flip_y = flip.y;
                 }
-                let translation = Vec3::new(tex.offset.x, tex.offset.y, z as f32 * 0.001);
+                let eff_x = flip.map_or(tex.offset.x, |f| if f.x { -tex.offset.x } else { tex.offset.x });
+                let eff_y = flip.map_or(tex.offset.y, |f| if f.y { -tex.offset.y } else { tex.offset.y });
+                let translation = Vec3::new(eff_x, eff_y, z as f32 * 0.001);
                 let mut entity_cmd = cmd.spawn((
                     common,
                     sprite,
@@ -773,5 +788,211 @@ fn spawn_layered_children(
                 }
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ------------------------------------------------------------------ //
+    // Helpers
+    // ------------------------------------------------------------------ //
+
+    fn flip_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(bevy::app::PreUpdate, propagate_flip);
+        app
+    }
+
+    fn offset_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(bevy::app::PreUpdate, propagate_offset);
+        app
+    }
+
+    /// Spawn a parent carrying `AseFlip` and a sprite child carrying
+    /// `AppliedOffset` + `Transform`. The relationship hook auto-populates
+    /// `SpriteLayers` on the parent.
+    fn spawn_flip_fixture(
+        app: &mut App,
+        flip: AseFlip,
+        offset: Vec2,
+        initial: Vec3,
+    ) -> (Entity, Entity) {
+        let parent = app.world_mut().spawn(flip).id();
+        let child = app
+            .world_mut()
+            .spawn((
+                SpriteLayerOf(parent),
+                Sprite::default(),
+                Transform::from_translation(initial),
+                AppliedOffset(offset),
+            ))
+            .id();
+        (parent, child)
+    }
+
+    /// Spawn a parent carrying `AseTexture` (and optionally `AseFlip`) and a
+    /// sprite child carrying `AppliedOffset` + `Transform`.
+    fn spawn_offset_fixture(
+        app: &mut App,
+        flip: Option<AseFlip>,
+        offset: Vec2,
+        applied: Vec2,
+        initial: Vec3,
+    ) -> (Entity, Entity) {
+        let tex = AseTexture::new(Handle::default()).with_offset(offset);
+        let parent = match flip {
+            Some(f) => app.world_mut().spawn((tex, f)).id(),
+            None => app.world_mut().spawn(tex).id(),
+        };
+        let child = app
+            .world_mut()
+            .spawn((
+                SpriteLayerOf(parent),
+                Transform::from_translation(initial),
+                AppliedOffset(applied),
+            ))
+            .id();
+        (parent, child)
+    }
+
+    fn translation(app: &App, entity: Entity) -> Vec3 {
+        app.world().get::<Transform>(entity).unwrap().translation
+    }
+
+    // ------------------------------------------------------------------ //
+    // propagate_flip
+    // ------------------------------------------------------------------ //
+
+    /// When flip.x is true, the child's translation.x should be the negative
+    /// of the stored raw offset.
+    #[test]
+    fn flip_x_negates_offset_x() {
+        let mut app = flip_app();
+        let (_, child) = spawn_flip_fixture(
+            &mut app,
+            AseFlip { x: true, y: false },
+            Vec2::new(2.0, 3.0),
+            Vec3::ZERO,
+        );
+        app.update();
+        assert_eq!(translation(&app, child).x, -2.0);
+        assert_eq!(translation(&app, child).y, 3.0);
+    }
+
+    /// When flip.y is true, the child's translation.y should be negated.
+    #[test]
+    fn flip_y_negates_offset_y() {
+        let mut app = flip_app();
+        let (_, child) = spawn_flip_fixture(
+            &mut app,
+            AseFlip { x: false, y: true },
+            Vec2::new(2.0, 3.0),
+            Vec3::ZERO,
+        );
+        app.update();
+        assert_eq!(translation(&app, child).x, 2.0);
+        assert_eq!(translation(&app, child).y, -3.0);
+    }
+
+    /// Both axes flipped: both components of the translation should be negated.
+    #[test]
+    fn flip_xy_negates_both() {
+        let mut app = flip_app();
+        let (_, child) = spawn_flip_fixture(
+            &mut app,
+            AseFlip { x: true, y: true },
+            Vec2::new(2.0, 3.0),
+            Vec3::ZERO,
+        );
+        app.update();
+        assert_eq!(translation(&app, child).x, -2.0);
+        assert_eq!(translation(&app, child).y, -3.0);
+    }
+
+    /// Toggling flip.x after the first frame should update the child's
+    /// translation on the next update.
+    #[test]
+    fn flip_x_toggle_updates_translation() {
+        let mut app = flip_app();
+        let (parent, child) = spawn_flip_fixture(
+            &mut app,
+            AseFlip { x: false, y: false },
+            Vec2::new(2.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+        );
+        app.update();
+        assert_eq!(translation(&app, child).x, 2.0, "before toggle");
+
+        // Advance the world tick so the mutation lands in a tick the next
+        // system run can detect as Changed.
+        app.world_mut().increment_change_tick();
+        app.world_mut().get_mut::<AseFlip>(parent).unwrap().x = true;
+        app.update();
+        assert_eq!(translation(&app, child).x, -2.0, "after toggle");
+    }
+
+    // ------------------------------------------------------------------ //
+    // propagate_offset
+    // ------------------------------------------------------------------ //
+
+    /// When flip.x is active and the offset changes, the delta applied to
+    /// translation.x must be negated so the anchor stays correct.
+    ///
+    /// Seeded with applied=2.0 / new offset=4.0 so the first update triggers
+    /// a delta of +2.0 which should be applied as -2.0 (flip active).
+    #[test]
+    fn offset_delta_with_flip_x_is_negated() {
+        let mut app = offset_app();
+        // flip.x=true, previous applied offset = 2.0 (translation was -2.0).
+        // New tex.offset = 4.0 -> delta = 2.0 -> effective dx = -2.0.
+        let (_, child) = spawn_offset_fixture(
+            &mut app,
+            Some(AseFlip { x: true, y: false }),
+            Vec2::new(4.0, 0.0), // tex.offset (new)
+            Vec2::new(2.0, 0.0), // AppliedOffset (previous)
+            Vec3::new(-2.0, 0.0, 0.0),
+        );
+        app.update();
+        assert_eq!(translation(&app, child).x, -4.0);
+    }
+
+    /// Without flip the delta is applied with its natural sign.
+    #[test]
+    fn offset_delta_without_flip_is_positive() {
+        let mut app = offset_app();
+        let (_, child) = spawn_offset_fixture(
+            &mut app,
+            None,
+            Vec2::new(4.0, 0.0),
+            Vec2::new(2.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+        );
+        app.update();
+        assert_eq!(translation(&app, child).x, 4.0);
+    }
+
+    /// Zero offset: no translation change regardless of flip state.
+    #[test]
+    fn zero_offset_leaves_translation_unchanged() {
+        let mut app = offset_app();
+        let initial = Vec3::new(0.0, 0.0, 5.0);
+        let (_, child) = spawn_offset_fixture(
+            &mut app,
+            Some(AseFlip { x: true, y: true }),
+            Vec2::ZERO,
+            Vec2::ZERO,
+            initial,
+        );
+        app.update();
+        assert_eq!(translation(&app, child).x, 0.0);
+        assert_eq!(translation(&app, child).y, 0.0);
+        // z must not be touched by either propagation system
+        assert_eq!(translation(&app, child).z, 5.0);
     }
 }
