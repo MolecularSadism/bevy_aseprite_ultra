@@ -57,6 +57,45 @@ fn atlas_pixel_data(app: &App, handle: &Handle<Aseprite>) -> Vec<u8> {
         .unwrap_or_default()
 }
 
+/// Extract the raw RGBA bytes for a single composite frame from the shared atlas.
+///
+/// The atlas is shared across composite, all-layers, and per-layer renders.
+/// Checking the whole atlas image is meaningless when testing a custom layer
+/// filter — use this instead to inspect only the composite frame cells.
+fn composite_frame_pixel_data(app: &App, handle: &Handle<Aseprite>, frame: usize) -> Vec<u8> {
+    let world = app.world();
+    let ase = world
+        .resource::<Assets<Aseprite>>()
+        .get(handle)
+        .unwrap();
+
+    let atlas_index = ase.get_atlas_index(frame);
+    let layout = world
+        .resource::<Assets<TextureAtlasLayout>>()
+        .get(&ase.atlas_layout)
+        .unwrap();
+    let rect = layout.textures[atlas_index];
+
+    let image = world
+        .resource::<Assets<Image>>()
+        .get(&ase.atlas_image)
+        .unwrap();
+    let data = image.data.as_ref().unwrap();
+    let atlas_width = image.texture_descriptor.size.width as usize;
+
+    let x0 = rect.min.x as usize;
+    let y0 = rect.min.y as usize;
+    let w = (rect.max.x - rect.min.x) as usize;
+    let h = (rect.max.y - rect.min.y) as usize;
+
+    let mut pixels = Vec::with_capacity(w * h * 4);
+    for row in y0..y0 + h {
+        let start = (row * atlas_width + x0) * 4;
+        pixels.extend_from_slice(&data[start..start + w * 4]);
+    }
+    pixels
+}
+
 #[test]
 fn empty_layer_filter_produces_blank_atlas() {
     let mut app = make_app();
@@ -70,10 +109,12 @@ fn empty_layer_filter_produces_blank_atlas() {
 
     load_until_ready(&mut app, &handle);
 
-    let data = atlas_pixel_data(&app, &handle);
+    // The atlas is shared with all-layers and per-layer renders, so the full
+    // atlas image is never blank. Check only the composite frame's pixel region.
+    let pixels = composite_frame_pixel_data(&app, &handle, 0);
     assert!(
-        data.iter().all(|&b| b == 0),
-        "empty layer filter should produce a blank atlas"
+        pixels.iter().all(|&b| b == 0),
+        "empty layer filter should produce a blank composite frame"
     );
 }
 
