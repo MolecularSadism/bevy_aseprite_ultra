@@ -713,7 +713,6 @@ fn spawn_layered_children(
             SpriteLayerOf(parent),
             layer_id,
             Name::new(layer_id.as_str().to_owned()),
-            visibility,
         );
 
         match &tex.render_target {
@@ -738,6 +737,7 @@ fn spawn_layered_children(
                     sprite,
                     Transform::from_translation(translation),
                     AppliedOffset(tex.offset),
+                    visibility,
                 ));
                 if has_anim {
                     entity_cmd.insert(AnimationLayer::new(layer_handle.clone()));
@@ -776,6 +776,7 @@ fn spawn_layered_children(
                     },
                     ZIndex(z as i32),
                     AppliedOffset(tex.offset),
+                    visibility,
                 ));
                 if has_anim {
                     entity_cmd.insert(AnimationLayer::new(layer_handle.clone()));
