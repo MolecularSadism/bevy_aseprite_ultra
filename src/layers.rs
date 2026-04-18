@@ -1,9 +1,10 @@
 use crate::animation::{AseAnimation, AnimationLayer};
 use crate::loader::Aseprite;
-use crate::slice::AseSlice;
+use crate::slice::{nine_patch_to_slicer, AseSlice};
 use bevy::image::TextureAtlas;
 use bevy::prelude::*;
-use bevy::ui::widget::ImageNode;
+use bevy::sprite::TextureSlicer;
+use bevy::ui::widget::{ImageNode, NodeImageMode};
 use msg_interned_id::InternedId;
 
 /// Controls whether layer children render as world [`Sprite`]s or UI
@@ -548,6 +549,33 @@ fn propagate_offset(
 
 // ---- helpers ----
 
+/// Resolve the initial texture-atlas index and optional 9-slice data a newly
+/// spawned sprite should render with, from the same `Aseprite` whose handle
+/// the child will carry downstream.
+///
+/// - Without a slice: the aseprite's frame 0 atlas rect.
+/// - With a slice: the slice's own atlas rect, plus a [`TextureSlicer`] when
+///   the slice carries 9-patch data.
+///
+/// Returns `None` when a slice name is requested but missing from this
+/// aseprite — the caller must skip spawning rather than fall back to a
+/// frame-0 rect that won't match the `AseSlice` attached to the child.
+fn initial_atlas(
+    ase: &Aseprite,
+    slice: Option<&SliceId>,
+) -> Option<(usize, Option<TextureSlicer>)> {
+    match slice {
+        None => Some((ase.get_atlas_index(0), None)),
+        Some(id) => {
+            let meta = ase.slices.get(id.as_str())?;
+            let slicer = meta
+                .nine_patch
+                .map(|np| nine_patch_to_slicer(np, meta.rect.size()));
+            Some((meta.atlas_id, slicer))
+        }
+    }
+}
+
 fn spawn_children(
     cmd: &mut Commands,
     server: &AssetServer,
@@ -595,16 +623,28 @@ fn spawn_baked_child(
         Name::new("baked"),
     );
 
+    let Some((index, slicer)) = initial_atlas(aseprite, tex.slice.as_ref()) else {
+        warn!(
+            "slice \"{}\" not found in aseprite \"{}\"; skipping baked child",
+            tex.slice.as_ref().map_or("", |s| s.as_str()),
+            aseprite.source_path,
+        );
+        return;
+    };
+
     match &tex.render_target {
         RenderTarget::Sprite => {
             let mut sprite = Sprite {
                 image: aseprite.atlas_image.clone(),
                 texture_atlas: Some(TextureAtlas {
                     layout: aseprite.atlas_layout.clone(),
-                    index: aseprite.get_atlas_index(0),
+                    index,
                 }),
                 ..default()
             };
+            if let Some(s) = slicer {
+                sprite.image_mode = SpriteImageMode::Sliced(s);
+            }
             if let Some(flip) = flip {
                 sprite.flip_x = flip.x;
                 sprite.flip_y = flip.y;
@@ -633,10 +673,13 @@ fn spawn_baked_child(
                 image: aseprite.atlas_image.clone(),
                 texture_atlas: Some(TextureAtlas {
                     layout: aseprite.atlas_layout.clone(),
-                    index: aseprite.get_atlas_index(0),
+                    index,
                 }),
                 ..default()
             };
+            if let Some(s) = slicer {
+                node.image_mode = NodeImageMode::Sliced(s);
+            }
             if let Some(flip) = flip {
                 node.flip_x = flip.x;
                 node.flip_y = flip.y;
@@ -704,9 +747,27 @@ fn spawn_layered_children(
         let layer_path = format!("{}#{}", aseprite.source_path, layer_id.as_str());
         let layer_handle: Handle<Aseprite> = server.load(&layer_path);
 
-        // Pre-populate with per-layer asset data if available, else fall back
-        // to the parent asset (same atlas, different frame indices).
-        let layer_ase = assets.get(&layer_handle).unwrap_or(aseprite);
+        // Directive: never add an image without directly adding matching atlas
+        // data. If the per-layer sub-asset isn't resolvable yet, skip; a
+        // respawn will happen via spawn_layers_on_asset_load / update_layers
+        // once dependencies arrive.
+        let Some(layer_ase) = assets.get(&layer_handle) else {
+            warn!(
+                "per-layer aseprite sub-asset not yet loaded for \"{}\"; \
+                 skipping layer child (will be spawned when the asset resolves)",
+                layer_path,
+            );
+            continue;
+        };
+
+        let Some((index, slicer)) = initial_atlas(layer_ase, tex.slice.as_ref()) else {
+            warn!(
+                "slice \"{}\" not found in layer \"{}\"; skipping layer child",
+                tex.slice.as_ref().map_or("", |s| s.as_str()),
+                layer_path,
+            );
+            continue;
+        };
 
         let common = (
             ChildOf(parent),
@@ -721,10 +782,13 @@ fn spawn_layered_children(
                     image: layer_ase.atlas_image.clone(),
                     texture_atlas: Some(TextureAtlas {
                         layout: layer_ase.atlas_layout.clone(),
-                        index: layer_ase.get_atlas_index(0),
+                        index,
                     }),
                     ..default()
                 };
+                if let Some(s) = slicer {
+                    sprite.image_mode = SpriteImageMode::Sliced(s);
+                }
                 if let Some(flip) = flip {
                     sprite.flip_x = flip.x;
                     sprite.flip_y = flip.y;
@@ -754,10 +818,13 @@ fn spawn_layered_children(
                     image: layer_ase.atlas_image.clone(),
                     texture_atlas: Some(TextureAtlas {
                         layout: layer_ase.atlas_layout.clone(),
-                        index: layer_ase.get_atlas_index(0),
+                        index,
                     }),
                     ..default()
                 };
+                if let Some(s) = slicer {
+                    node.image_mode = NodeImageMode::Sliced(s);
+                }
                 if let Some(flip) = flip {
                     node.flip_x = flip.x;
                     node.flip_y = flip.y;
