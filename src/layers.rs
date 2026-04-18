@@ -557,23 +557,21 @@ fn propagate_offset(
 /// - With a slice: the slice's own atlas rect, plus a [`TextureSlicer`] when
 ///   the slice carries 9-patch data.
 ///
-/// Returns `None` when a slice name is requested but missing from this
-/// aseprite — the caller must skip spawning rather than fall back to a
-/// frame-0 rect that won't match the `AseSlice` attached to the child.
+/// If a slice name is requested but missing from this aseprite, falls back
+/// to frame 0 — `render_slice` will emit its own warning at runtime.
 fn initial_atlas(
     ase: &Aseprite,
     slice: Option<&SliceId>,
-) -> Option<(usize, Option<TextureSlicer>)> {
-    match slice {
-        None => Some((ase.get_atlas_index(0), None)),
-        Some(id) => {
-            let meta = ase.slices.get(id.as_str())?;
+) -> (usize, Option<TextureSlicer>) {
+    if let Some(id) = slice {
+        if let Some(meta) = ase.slices.get(id.as_str()) {
             let slicer = meta
                 .nine_patch
                 .map(|np| nine_patch_to_slicer(np, meta.rect.size()));
-            Some((meta.atlas_id, slicer))
+            return (meta.atlas_id, slicer);
         }
     }
+    (ase.get_atlas_index(0), None)
 }
 
 fn spawn_children(
@@ -623,14 +621,7 @@ fn spawn_baked_child(
         Name::new("baked"),
     );
 
-    let Some((index, slicer)) = initial_atlas(aseprite, tex.slice.as_ref()) else {
-        warn!(
-            "slice \"{}\" not found in aseprite \"{}\"; skipping baked child",
-            tex.slice.as_ref().map_or("", |s| s.as_str()),
-            aseprite.source_path,
-        );
-        return;
-    };
+    let (index, slicer) = initial_atlas(aseprite, tex.slice.as_ref());
 
     match &tex.render_target {
         RenderTarget::Sprite => {
@@ -747,27 +738,15 @@ fn spawn_layered_children(
         let layer_path = format!("{}#{}", aseprite.source_path, layer_id.as_str());
         let layer_handle: Handle<Aseprite> = server.load(&layer_path);
 
-        // Directive: never add an image without directly adding matching atlas
-        // data. If the per-layer sub-asset isn't resolvable yet, skip; a
-        // respawn will happen via spawn_layers_on_asset_load / update_layers
-        // once dependencies arrive.
-        let Some(layer_ase) = assets.get(&layer_handle) else {
-            warn!(
-                "per-layer aseprite sub-asset not yet loaded for \"{}\"; \
-                 skipping layer child (will be spawned when the asset resolves)",
-                layer_path,
-            );
-            continue;
-        };
+        // Per-layer sub-assets load lazily on first `server.load` request, so
+        // they are typically not yet in `Assets<Aseprite>` here. Fall back to
+        // the parent composite (parent and per-layer share `atlas_image` and
+        // `atlas_layout`; only the frame/slice atlas index differs). The
+        // `render_children_animation` / `render_slice` systems reconcile the
+        // per-layer index once the sub-asset resolves.
+        let layer_ase = assets.get(&layer_handle).unwrap_or(aseprite);
 
-        let Some((index, slicer)) = initial_atlas(layer_ase, tex.slice.as_ref()) else {
-            warn!(
-                "slice \"{}\" not found in layer \"{}\"; skipping layer child",
-                tex.slice.as_ref().map_or("", |s| s.as_str()),
-                layer_path,
-            );
-            continue;
-        };
+        let (index, slicer) = initial_atlas(layer_ase, tex.slice.as_ref());
 
         let common = (
             ChildOf(parent),
