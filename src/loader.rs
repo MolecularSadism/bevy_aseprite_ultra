@@ -670,12 +670,27 @@ impl AssetLoader for AsepriteLoader {
                     // canvas-sized). Skip rather than corrupt the atlas.
                     continue;
                 }
+                // Per-pixel blit: where the rendered normal is transparent
+                // (no `.normal` layer covered this pixel) we leave the
+                // flat-blue default so the user's lighting shader gets a
+                // meaningful "no surface detail" normal instead of zeros.
+                // Output alpha is always set to 255 — alpha-driven fragment
+                // discard happens in the color path, not the normal path.
                 for row in 0..rh {
-                    let src_off = row * (width as usize) * 4;
-                    let dst_off =
-                        ((rect.min.y as usize + row) * atlas_w + rect.min.x as usize) * 4;
-                    buf[dst_off..dst_off + rw * 4]
-                        .copy_from_slice(&bytes[src_off..src_off + rw * 4]);
+                    for col in 0..rw {
+                        let src_off = (row * (width as usize) + col) * 4;
+                        if bytes[src_off + 3] == 0 {
+                            continue;
+                        }
+                        let dst_off = ((rect.min.y as usize + row) * atlas_w
+                            + rect.min.x as usize
+                            + col)
+                            * 4;
+                        buf[dst_off] = bytes[src_off];
+                        buf[dst_off + 1] = bytes[src_off + 1];
+                        buf[dst_off + 2] = bytes[src_off + 2];
+                        buf[dst_off + 3] = 255;
+                    }
                 }
             }
             Some(Image {
