@@ -12,13 +12,15 @@
 //!   `<stem>.aseprite`. Used as a fallback for layers that have no in-file
 //!   companion.
 //!
-//! # Custom lighting
+//! # Lighting
 //!
-//! `AseLitMaterial`'s default fragment shader outputs `color * tint`. To
-//! actually shade with the normal map, define your own `Material2d` with
-//! the same bindings (color texture, normal texture, `AseLitParams` uniform)
-//! and impl `RenderAnimation` / `RenderSlice` on it; this example shows the
-//! shape.
+//! The bundled shader does a 2D half-Lambert against the tangent-space normal
+//! using `AseLitParams::sun_dir` / `sun_color` / `ambient`. With those fields
+//! at their defaults (`ambient = 1`, `sun_color = 0`) the output is still
+//! `color * tint`. To drive shading, write the lighting fields per frame
+//! (e.g., from your scene's directional source). Users wanting a different
+//! lighting model can ship their own `Material2d` with the same binding
+//! layout and impl `RenderAnimation` / `RenderSlice` on it.
 
 use bevy::{image::ImageSamplerDescriptor, prelude::*};
 use bevy_aseprite_ultra::prelude::*;

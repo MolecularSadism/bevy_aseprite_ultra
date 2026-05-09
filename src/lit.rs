@@ -7,12 +7,20 @@
 //!
 //! # Custom lighting
 //!
-//! [`AseLitMaterial`]'s default fragment shader outputs `color * tint` and
-//! samples the normal but ignores it — the crate intentionally does not ship
-//! a lighting model. To add lighting, define your own [`Material2d`] that
-//! exposes the same bindings (color texture, normal texture, [`AseLitParams`]
-//! uniform) and impl [`RenderAnimation`] / [`RenderSlice`] on it; the
-//! existing `render_children_animation::<MeshMaterial2d<MyMaterial>>` and
+//! [`AseLitMaterial`]'s bundled shader does a 2D half-Lambert against the
+//! tangent-space normal: `albedo * (ambient + sun_color * max(0, dot(N, -sun_dir)))`.
+//! The lighting fields default to `ambient = 1`, `sun_color = 0`, so a caller
+//! that writes only the existing `uv_rect` / `flip` / `tint` fields gets the
+//! original unlit `color * tint` output. To drive directional shading, mirror
+//! your scene's sun direction into [`AseLitParams::sun_dir`] /
+//! [`AseLitParams::sun_color`] / [`AseLitParams::ambient`] each time the
+//! lighting source changes.
+//!
+//! Users who want a different lighting model can define their own
+//! [`Material2d`] that exposes the same bindings (color texture, normal
+//! texture, [`AseLitParams`] uniform) and impl [`RenderAnimation`] /
+//! [`RenderSlice`] on it; the existing
+//! `render_children_animation::<MeshMaterial2d<MyMaterial>>` and
 //! `render_slice::<MeshMaterial2d<MyMaterial>>` systems plug it in.
 
 use crate::animation::{AnimationLayer, AnimationState, RenderAnimation};
@@ -54,6 +62,13 @@ impl Plugin for AsepriteLitPlugin {
 /// [`RenderAnimation`] / [`RenderSlice`] impls keep these in sync with the
 /// current animation frame and slice rect; [`propagate_flip_lit`] keeps
 /// `flip` in sync with [`AseFlip`].
+///
+/// Lighting fields ([`sun_dir`](Self::sun_dir),
+/// [`sun_color`](Self::sun_color), [`ambient`](Self::ambient)) drive the
+/// bundled half-Lambert fragment shader. Defaults render `color * tint`
+/// (`ambient = (1, 1, 1)`, `sun_color = (0, 0, 0)`); writers that want
+/// directional shading should overwrite these per-frame from their lighting
+/// resource.
 #[derive(ShaderType, Clone, Copy, Debug)]
 pub struct AseLitParams {
     /// Atlas rect in pixel space: xy = min, zw = size.
@@ -62,6 +77,16 @@ pub struct AseLitParams {
     pub flip: Vec2,
     pub _pad: Vec2,
     pub tint: Vec4,
+    /// Directional light travel direction in tangent space. xy is the unit
+    /// direction the *light moves toward*; the shader uses `-sun_dir.xy` as
+    /// the direction *to the source*. zw unused.
+    pub sun_dir: Vec4,
+    /// rgb = directional source colour pre-multiplied by intensity. a unused.
+    pub sun_color: Vec4,
+    /// rgb = ambient term added to the directional contribution. Defaults to
+    /// `(1, 1, 1)` so the unlit-by-default render path produces `color * tint`.
+    /// a unused.
+    pub ambient: Vec4,
 }
 
 impl Default for AseLitParams {
@@ -71,17 +96,24 @@ impl Default for AseLitParams {
             flip: Vec2::ONE,
             _pad: Vec2::ZERO,
             tint: Vec4::ONE,
+            sun_dir: Vec4::ZERO,
+            sun_color: Vec4::ZERO,
+            ambient: Vec4::ONE,
         }
     }
 }
 
 /// Two-texture lit aseprite material. Color and normal are sampled from the
-/// shared aseprite atlases; rect and flip are driven per-entity by
-/// [`AseLitParams`].
+/// shared aseprite atlases; rect, flip, and lighting parameters are driven
+/// per-entity by [`AseLitParams`].
 ///
-/// The default fragment shader outputs `color * tint`; users wanting actual
-/// lighting should write a custom material with the same binding layout (see
-/// the module docs).
+/// The bundled fragment shader does a 2D half-Lambert against
+/// [`AseLitParams::sun_dir`] modulated by [`AseLitParams::sun_color`] and
+/// added to [`AseLitParams::ambient`]. Defaults (`ambient = (1, 1, 1)`,
+/// `sun_color = (0, 0, 0)`) preserve the old `color * tint` output, so a
+/// caller that does not write the lighting fields gets the unlit render path
+/// for free. Writers wanting a different lighting model can write a custom
+/// material with the same binding layout (see the module docs).
 #[derive(AsBindGroup, Asset, Clone, Debug, TypePath)]
 pub struct AseLitMaterial {
     #[texture(0)]
@@ -206,8 +238,7 @@ fn promote_lit(
         let params = AseLitParams {
             uv_rect: Vec4::new(min.x, min.y, size.x, size.y),
             flip: pending.flip,
-            tint: Vec4::ONE,
-            _pad: Vec2::ZERO,
+            ..AseLitParams::default()
         };
         let mat = materials.add(AseLitMaterial {
             color: ase.atlas_image.clone(),

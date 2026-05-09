@@ -1,3 +1,11 @@
+## Unreleased
+
+- **`lit` feature**: `AseLitMaterial` bundled shader now does a 2D half-Lambert
+  against the sampled tangent-space normal, driven by new
+  `AseLitParams::sun_dir` / `sun_color` / `ambient` fields. Defaults
+  (`ambient = 1`, `sun_color = 0`) preserve the previous `color * tint`
+  output, so the change is opt-in via writing the new fields.
+
 ## 0.9.0
 
 - updated to bevy 0.18.
