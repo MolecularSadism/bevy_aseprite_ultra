@@ -48,6 +48,12 @@ asset_processing = [
   "bevy/asset_processor",
 ]
 3d = ["bevy/bevy_pbr"]
+lit = []
+
+[[example]]
+name = "normal_maps"
+path = "examples/normal_maps.rs"
+required-features = ["lit"]
 
 [[example]]
 name = "asset_processing"

@@ -7,6 +7,8 @@ use bevy::prelude::*;
 pub(crate) mod animation;
 pub(crate) mod error;
 pub(crate) mod layers;
+#[cfg(feature = "lit")]
+pub(crate) mod lit;
 pub(crate) mod loader;
 #[cfg(feature = "asset_processing")]
 pub(crate) mod processor;
@@ -22,7 +24,11 @@ pub mod prelude {
         AseFlip, AseTexture, LayerEntry, LayerFilter, LayerId, RenderTarget, SliceId,
         SpriteLayerOf, SpriteLayers,
     };
-    pub use crate::loader::{Aseprite, AsepriteLoaderPlugin, AsepriteLoaderSettings, SliceMeta};
+    #[cfg(feature = "lit")]
+    pub use crate::lit::{AseLitMaterial, AseLitParams, AseLitQuad, AsepriteLitPlugin};
+    pub use crate::loader::{
+        Aseprite, AsepriteLoaderPlugin, AsepriteLoaderSettings, NormalMapMode, SliceMeta,
+    };
     pub use crate::slice::{nine_patch_to_slicer, render_slice, AseSlice, RenderSlice};
     pub use crate::AsepriteUltraPlugin;
 }
@@ -73,6 +79,8 @@ impl Plugin for AsepriteUltraPlugin {
         app.add_plugins(slice::AsepriteSlicePlugin);
         app.add_plugins(animation::AsepriteAnimationPlugin);
         app.add_plugins(layers::AsepriteLayersPlugin);
+        #[cfg(feature = "lit")]
+        app.add_plugins(lit::AsepriteLitPlugin);
         #[cfg(feature = "asset_processing")]
         app.add_plugins(processor::AsepriteProcessorPlugin);
     }

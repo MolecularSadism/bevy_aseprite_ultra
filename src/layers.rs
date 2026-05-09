@@ -159,6 +159,11 @@ pub struct AseTexture {
     /// the asset's default order. Layers not in this list keep their
     /// asset-default z-position. Set to `None` to use the asset order.
     pub layer_order: Option<Vec<LayerId>>,
+    /// Spawn lit children using `AseLitMaterial` (requires the `lit`
+    /// feature and an aseprite asset that has `normal_atlas_image`). Falls
+    /// back to unlit `Sprite` when either condition is not met, or when
+    /// the render target is UI / a slice is configured.
+    pub lit: bool,
 }
 
 impl AseTexture {
@@ -172,6 +177,7 @@ impl AseTexture {
             render_target: RenderTarget::Sprite,
             offset: default(),
             layer_order: None,
+            lit: false,
         }
     }
 
@@ -185,7 +191,18 @@ impl AseTexture {
             render_target: RenderTarget::Sprite,
             offset: default(),
             layer_order: None,
+            lit: false,
         }
+    }
+
+    /// Opt into lit rendering. Requires the `lit` cargo feature and an
+    /// aseprite asset with a normal-map atlas (i.e. `.normal` companion
+    /// layers in the file or a sibling normal-map file). Falls back to
+    /// unlit when those conditions are not met, or when the render target
+    /// is UI / a slice is configured.
+    pub fn lit(mut self) -> Self {
+        self.lit = true;
+        self
     }
 
     /// Set the slice name. Enables slice-based rendering.
@@ -757,6 +774,42 @@ fn spawn_layered_children(
 
         match &tex.render_target {
             RenderTarget::Sprite => {
+                let eff_x = flip.map_or(tex.offset.x, |f| if f.x { -tex.offset.x } else { tex.offset.x });
+                let eff_y = flip.map_or(tex.offset.y, |f| if f.y { -tex.offset.y } else { tex.offset.y });
+                let translation = Vec3::new(eff_x, eff_y, z as f32 * 0.001);
+
+                #[cfg(feature = "lit")]
+                let want_lit = tex.lit
+                    && tex.slice.is_none()
+                    && layer_ase.normal_atlas_image.is_some();
+                #[cfg(not(feature = "lit"))]
+                let want_lit = false;
+
+                if want_lit {
+                    #[cfg(feature = "lit")]
+                    {
+                        let flip_vec = bevy::prelude::Vec2::new(
+                            flip.map_or(1.0, |f| if f.x { -1.0 } else { 1.0 }),
+                            flip.map_or(1.0, |f| if f.y { -1.0 } else { 1.0 }),
+                        );
+                        let mut entity_cmd = cmd.spawn((
+                            common,
+                            Transform::from_translation(translation),
+                            AppliedOffset(tex.offset),
+                            visibility,
+                            crate::lit::LitPending {
+                                aseprite: layer_handle.clone(),
+                                atlas_index: index,
+                                flip: flip_vec,
+                            },
+                        ));
+                        if has_anim {
+                            entity_cmd.insert(AnimationLayer::new(layer_handle.clone()));
+                        }
+                    }
+                    continue;
+                }
+
                 let mut sprite = Sprite {
                     image: layer_ase.atlas_image.clone(),
                     texture_atlas: Some(TextureAtlas {
@@ -772,9 +825,6 @@ fn spawn_layered_children(
                     sprite.flip_x = flip.x;
                     sprite.flip_y = flip.y;
                 }
-                let eff_x = flip.map_or(tex.offset.x, |f| if f.x { -tex.offset.x } else { tex.offset.x });
-                let eff_y = flip.map_or(tex.offset.y, |f| if f.y { -tex.offset.y } else { tex.offset.y });
-                let translation = Vec3::new(eff_x, eff_y, z as f32 * 0.001);
                 let mut entity_cmd = cmd.spawn((
                     common,
                     sprite,
