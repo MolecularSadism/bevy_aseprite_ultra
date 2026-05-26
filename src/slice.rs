@@ -1,4 +1,4 @@
-use crate::animation::AnimationState;
+use crate::animation::AseFrame;
 use crate::layers::SpriteLayerOf;
 use crate::loader::{Aseprite, SliceMeta};
 use bevy::{
@@ -183,17 +183,17 @@ pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
     mut slices: Query<(
         &mut T,
         Ref<AseSlice>,
-        Option<&AnimationState>,
+        Option<&AseFrame>,
         Option<&SpriteLayerOf>,
         Option<&mut Anchor>,
     )>,
-    parent_states: Query<&AnimationState>,
+    parent_frames: Query<&AseFrame>,
     aseprites: Res<Assets<Aseprite>>,
     mut extra: <T as RenderSlice>::Extra<'_>,
 ) {
     let asset_change = aseprites.is_changed();
 
-    for (mut target, slice, local_state, parent_ref, maybe_anchor) in &mut slices {
+    for (mut target, slice, local_frame, parent_ref, maybe_anchor) in &mut slices {
         if !asset_change && !slice.is_changed() {
             continue;
         }
@@ -205,15 +205,17 @@ pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
             continue;
         };
 
-        // Resolve AnimationState: prefer local (standalone), then look up parent.
-        let maybe_state = local_state.or_else(|| {
-            parent_ref.and_then(|p| parent_states.get(p.0).ok())
+        // Resolve AseFrame: prefer local, then fall back to the parent's.
+        let maybe_frame = local_frame.or_else(|| {
+            parent_ref.and_then(|p| parent_frames.get(p.0).ok())
         });
 
-        // For animated slices, use the frame-specific key if available.
-        let effective_meta = if let Some(state) = maybe_state {
-            let frame = usize::from(state.current_frame);
-            if let Some(key) = slice_meta.keys.iter().find(|k| k.frame == frame) {
+        // Apply the frame-specific slice key (rect / pivot / 9-patch) when the
+        // current frame matches one. Works for animated and statically-set
+        // frames alike.
+        let effective_meta = if let Some(frame) = maybe_frame {
+            let frame_idx = usize::from(frame.0);
+            if let Some(key) = slice_meta.keys.iter().find(|k| k.frame == frame_idx) {
                 &SliceMeta {
                     rect: key.rect,
                     atlas_id: slice_meta.atlas_id,

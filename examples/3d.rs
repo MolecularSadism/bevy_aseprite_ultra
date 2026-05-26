@@ -14,7 +14,7 @@ fn main() {
         .add_plugins(AsepriteUltraPlugin)
         .add_plugins(MaterialPlugin::<MyMaterial>::default())
         .add_systems(Startup, setup)
-        .add_systems(Update, render_animation::<MeshMaterial3d<MyMaterial>>)
+        .add_systems(Update, render_children_animation::<MeshMaterial3d<MyMaterial>>)
         .add_systems(Update, rotate_cube)
         .add_systems(Update, render_slice::<MeshMaterial3d<MyMaterial>>)
         .add_systems(
@@ -51,14 +51,14 @@ impl RenderAnimation for MyMaterial {
     fn render_animation(
         &mut self,
         aseprite: &Aseprite,
-        state: &AnimationState,
+        frame: u16,
         extra: &mut Self::Extra<'_>,
     ) {
         let Some(atlas_layout) = extra.1.get(&aseprite.atlas_layout) else {
             return;
         };
         self.image = aseprite.atlas_image.clone();
-        let index = aseprite.get_atlas_index(usize::from(state.current_frame));
+        let index = aseprite.get_atlas_index(usize::from(frame));
         self.texture_min = atlas_layout.textures[index].min;
         self.texture_max = atlas_layout.textures[index].max;
         self.time = extra.0.elapsed_secs();

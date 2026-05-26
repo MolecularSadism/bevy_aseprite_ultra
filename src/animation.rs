@@ -1,4 +1,4 @@
-use crate::layers::{AseTexture, SpriteLayers};
+use crate::layers::{AseTexture, SpriteLayerOf};
 use crate::loader::Aseprite;
 use anyhow::Context;
 use aseprite_loader::binary::chunks::tags::AnimationDirection as RawDirection;
@@ -24,55 +24,54 @@ impl Plugin for AsepriteAnimationPlugin {
             (
                 render_children_animation::<ImageNode>.before(UiSystems::Prepare),
                 render_children_animation::<Sprite>,
-                render_animation::<ImageNode>.before(UiSystems::Prepare),
-                render_animation::<Sprite>,
             ),
         );
         app.add_observer(next_frame);
 
         app.register_type::<AseAnimation>();
         app.register_type::<AnimationState>();
+        app.register_type::<AseFrame>();
         app.register_type::<PlayDirection>();
         app.register_type::<AnimationRepeat>();
     }
 }
 
 /// Any component that implements this trait can be used as a render target for
-/// aseprite animations. The plugin ships with implementations for [`Sprite`],
+/// aseprite frames. The plugin ships with implementations for [`Sprite`],
 /// [`ImageNode`], [`MeshMaterial2d`], and [`MaterialNode`] (plus [`MeshMaterial3d`]
 /// with the `3d` feature).
 ///
-/// Implement this trait on your own material to drive custom shaders with
-/// aseprite animation data.
+/// Implement this trait on your own material to drive custom shaders from the
+/// current [`AseFrame`].
 pub trait RenderAnimation {
     /// An extra system parameter used in rendering. Use a tuple if many are required.
     type Extra<'e>;
     fn render_animation(
         &mut self,
         aseprite: &Aseprite,
-        state: &AnimationState,
+        frame: u16,
         extra: &mut Self::Extra<'_>,
     );
 }
 
 impl RenderAnimation for ImageNode {
     type Extra<'e> = ();
-    fn render_animation(&mut self, aseprite: &Aseprite, state: &AnimationState, _extra: &mut ()) {
+    fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, _extra: &mut ()) {
         self.image = aseprite.atlas_image.clone();
         self.texture_atlas = Some(TextureAtlas {
             layout: aseprite.atlas_layout.clone(),
-            index: aseprite.get_atlas_index(usize::from(state.current_frame)),
+            index: aseprite.get_atlas_index(usize::from(frame)),
         });
     }
 }
 
 impl RenderAnimation for Sprite {
     type Extra<'e> = ();
-    fn render_animation(&mut self, aseprite: &Aseprite, state: &AnimationState, _extra: &mut ()) {
+    fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, _extra: &mut ()) {
         self.image = aseprite.atlas_image.clone();
         self.texture_atlas = Some(TextureAtlas {
             layout: aseprite.atlas_layout.clone(),
-            index: aseprite.get_atlas_index(usize::from(state.current_frame)),
+            index: aseprite.get_atlas_index(usize::from(frame)),
         });
     }
 }
@@ -82,13 +81,13 @@ impl<M: Material2d + RenderAnimation> RenderAnimation for MeshMaterial2d<M> {
     fn render_animation(
         &mut self,
         aseprite: &Aseprite,
-        state: &AnimationState,
+        frame: u16,
         extra: &mut Self::Extra<'_>,
     ) {
         let Some(material) = extra.0.get_mut(&*self) else {
             return;
         };
-        material.render_animation(aseprite, state, &mut extra.1);
+        material.render_animation(aseprite, frame, &mut extra.1);
     }
 }
 
@@ -97,13 +96,13 @@ impl<M: UiMaterial + RenderAnimation> RenderAnimation for MaterialNode<M> {
     fn render_animation(
         &mut self,
         aseprite: &Aseprite,
-        state: &AnimationState,
+        frame: u16,
         extra: &mut Self::Extra<'_>,
     ) {
         let Some(material) = extra.0.get_mut(&*self) else {
             return;
         };
-        material.render_animation(aseprite, state, &mut extra.1);
+        material.render_animation(aseprite, frame, &mut extra.1);
     }
 }
 
@@ -113,13 +112,38 @@ impl<M: Material + RenderAnimation> RenderAnimation for MeshMaterial3d<M> {
     fn render_animation(
         &mut self,
         aseprite: &Aseprite,
-        state: &AnimationState,
+        frame: u16,
         extra: &mut Self::Extra<'_>,
     ) {
         let Some(material) = extra.0.get_mut(&*self) else {
             return;
         };
-        material.render_animation(aseprite, state, &mut extra.1);
+        material.render_animation(aseprite, frame, &mut extra.1);
+    }
+}
+
+/// The current frame index into an aseprite asset.
+///
+/// This is the single source of truth read by renderers ([`Sprite`],
+/// [`ImageNode`], [`AseSlice`](crate::slice::AseSlice), custom materials). It is
+/// independent of animation: set it manually for static frame selection, or
+/// add [`AseAnimation`] to have a driver advance it over time.
+///
+/// On entities with [`AseTexture`](crate::layers::AseTexture), spawned layer
+/// children each carry their own `AseFrame`; the parent's frame is copied to
+/// children that lack their own [`AseAnimation`] driver, so per-layer animation
+/// works by attaching `AseAnimation` to a specific layer child.
+#[derive(Component, Default, Reflect, Clone, Copy, Debug)]
+#[reflect]
+pub struct AseFrame(pub u16);
+
+impl AseFrame {
+    pub fn new(frame: u16) -> Self {
+        AseFrame(frame)
+    }
+
+    pub fn get(&self) -> u16 {
+        self.0
     }
 }
 
@@ -141,6 +165,7 @@ impl<M: Material + RenderAnimation> RenderAnimation for MeshMaterial3d<M> {
 /// ```
 #[derive(Component, Debug, Clone, Reflect)]
 #[require(AnimationState)]
+#[require(AseFrame)]
 #[reflect]
 pub struct AseAnimation {
     pub tag: Option<String>,
@@ -361,25 +386,22 @@ impl AnimationLayer {
 #[derive(Component)]
 pub struct ManualTick;
 
-/// Tracks the current frame and elapsed time of an animation.
+/// Tracks per-animation internal state (relative frame within the active tag,
+/// elapsed time within the current frame, and ping-pong direction).
 ///
-/// Automatically added to entities with [`AseAnimation`] via required components.
-/// You can read this to query the current animation frame, or write to it
-/// when using [`ManualTick`] for manual frame control.
+/// The authoritative "current frame index into the asset" lives on
+/// [`AseFrame`], not here. This struct is only meaningful for entities driven
+/// by [`AseAnimation`]; reading it on a manually-set frame is a no-op.
 #[derive(Component, Debug, Default, Reflect)]
 #[reflect]
 pub struct AnimationState {
     pub relative_frame: u16,
-    pub current_frame: u16,
     pub elapsed: std::time::Duration,
     pub current_direction: PlayDirection,
 }
 
 #[allow(unused)]
 impl AnimationState {
-    pub fn current_frame(&self) -> u16 {
-        self.current_frame
-    }
     pub fn relative_frame(&self) -> u16 {
         self.relative_frame
     }
@@ -469,6 +491,7 @@ pub fn update_aseprite_animation(
         Entity,
         &mut AseAnimation,
         &mut AnimationState,
+        &mut AseFrame,
         Option<&AseTexture>,
         Option<&AnimationLayer>,
         Has<ManualTick>,
@@ -476,7 +499,9 @@ pub fn update_aseprite_animation(
     aseprites: Res<Assets<Aseprite>>,
     time: Res<Time>,
 ) -> Result<(), BevyError> {
-    for (entity, mut animation, mut state, tex, layer, is_manual) in animations.iter_mut() {
+    for (entity, mut animation, mut state, mut frame, tex, layer, is_manual) in
+        animations.iter_mut()
+    {
         let Some(handle) = resolve_handle(tex, layer) else {
             continue;
         };
@@ -514,22 +539,22 @@ pub fn update_aseprite_animation(
             animation.needs_repeat_init = false;
         }
 
-        if !range.contains(&state.current_frame) {
+        if !range.contains(&frame.0) {
             if !animation.hold_relative_frame {
-                state.current_frame = *range.start();
+                frame.0 = *range.start();
                 state.relative_frame = 0;
                 animation.relative_group = 0;
                 animation.new_relative_group = 0;
             } else {
                 if animation.new_relative_group != animation.relative_group {
                     animation.relative_group = animation.new_relative_group;
-                    state.current_frame = *range.start();
+                    frame.0 = *range.start();
                     state.relative_frame = 0;
                     state.elapsed = std::time::Duration::ZERO;
                 } else {
                     state.relative_frame =
                         (state.relative_frame) % (*range.end() * range.start() - 1);
-                    state.current_frame = *range.start() + state.relative_frame;
+                    frame.0 = *range.start() + state.relative_frame;
                 }
             }
         }
@@ -545,10 +570,7 @@ pub fn update_aseprite_animation(
         state.elapsed +=
             std::time::Duration::from_secs_f32(time.delta_secs() * animation.speed);
 
-        let Some(frame_duration) = aseprite
-            .frame_durations
-            .get(usize::from(state.current_frame))
-        else {
+        let Some(frame_duration) = aseprite.frame_durations.get(usize::from(frame.0)) else {
             return Ok(());
         };
 
@@ -572,13 +594,14 @@ fn next_frame(
     mut events: MessageWriter<AnimationEvents>,
     mut animations: Query<(
         &mut AnimationState,
+        &mut AseFrame,
         &mut AseAnimation,
         Option<&AseTexture>,
         Option<&AnimationLayer>,
     )>,
     aseprites: Res<Assets<Aseprite>>,
 ) {
-    let Ok((mut state, mut anim, tex, layer)) = animations.get_mut(trigger.0) else {
+    let Ok((mut state, mut frame, mut anim, tex, layer)) = animations.get_mut(trigger.0) else {
         return;
     };
 
@@ -639,28 +662,28 @@ fn next_frame(
 
     match direction {
         AnimationDirection::Forward => {
-            let next = state.current_frame + 1;
+            let next = frame.0 + 1;
 
             if next > *range.end() {
                 if handle_cycle_end(&mut anim, &mut events, trigger.0) {
-                    state.current_frame = *range.start();
+                    frame.0 = *range.start();
                     state.relative_frame = 0;
                 }
             } else {
-                state.current_frame = next;
+                frame.0 = next;
                 state.relative_frame += 1;
             }
         }
         AnimationDirection::Reverse => {
-            let next = state.current_frame.checked_sub(1).unwrap_or(*range.end());
+            let next = frame.0.checked_sub(1).unwrap_or(*range.end());
 
             if next == *range.end() {
                 if handle_cycle_end(&mut anim, &mut events, trigger.0) {
-                    state.current_frame = range.end() - 1;
+                    frame.0 = range.end() - 1;
                     state.relative_frame = range.end() - range.start() - 1;
                 }
             } else {
-                state.current_frame = next;
+                frame.0 = next;
                 state
                     .relative_frame
                     .checked_sub(1)
@@ -669,10 +692,10 @@ fn next_frame(
         }
         AnimationDirection::PingPong | AnimationDirection::PingPongReverse => {
             let (next, relative_next) = match state.current_direction {
-                PlayDirection::Forward => (state.current_frame + 1, state.relative_frame + 1),
+                PlayDirection::Forward => (frame.0 + 1, state.relative_frame + 1),
                 PlayDirection::Backward => (
                     state.relative_frame.checked_sub(1).unwrap_or(0),
-                    state.current_frame.checked_sub(1).unwrap_or(0),
+                    frame.0.checked_sub(1).unwrap_or(0),
                 ),
             };
 
@@ -684,17 +707,17 @@ fn next_frame(
             if next >= *range.end() && is_forward {
                 if handle_cycle_end(&mut anim, &mut events, trigger.0) {
                     state.current_direction = PlayDirection::Backward;
-                    state.current_frame = range.end() - 2;
+                    frame.0 = range.end() - 2;
                     state.relative_frame = range.end() - range.start() - 2;
                 }
             } else if next <= *range.start() && !is_forward {
                 if handle_cycle_end(&mut anim, &mut events, trigger.0) {
                     state.current_direction = PlayDirection::Forward;
-                    state.current_frame = *range.start();
+                    frame.0 = *range.start();
                     state.relative_frame = 0;
                 }
             } else {
-                state.current_frame = next;
+                frame.0 = next;
                 state.relative_frame = relative_next;
             }
         }
@@ -703,38 +726,197 @@ fn next_frame(
 
 // ---- Render systems ----
 
-/// Renders animation frames on child entities via parent → child iteration.
-/// Registered for [`Sprite`] and [`ImageNode`] by default.
-/// Register for your custom material type to support material rendering on children.
+/// Renders frames on any entity carrying [`AnimationLayer`] + the target
+/// render component `T`. The frame index is resolved by preferring the entity's
+/// own [`AseFrame`] (used for standalone entities and per-layer overrides) and
+/// otherwise falling back to the parent's [`AseFrame`] via [`SpriteLayerOf`].
+///
+/// Whether the frame is being driven by [`AseAnimation`] or set manually is
+/// irrelevant — the renderer just reads whichever [`AseFrame`] is in scope.
 pub fn render_children_animation<T: RenderAnimation + Component<Mutability = Mutable>>(
-    parents: Query<(&AnimationState, &SpriteLayers), With<AseAnimation>>,
-    mut children: Query<(&AnimationLayer, &mut T)>,
+    mut targets: Query<(
+        &AnimationLayer,
+        Option<&AseFrame>,
+        Option<&SpriteLayerOf>,
+        &mut T,
+    )>,
+    parent_frames: Query<&AseFrame>,
     aseprites: Res<Assets<Aseprite>>,
     mut extra: <T as RenderAnimation>::Extra<'_>,
 ) {
-    for (state, layers) in &parents {
-        for child in layers.iter() {
-            if let Ok((layer, mut target)) = children.get_mut(child) {
-                let Some(aseprite) = aseprites.get(&layer.aseprite) else {
-                    continue;
-                };
-                target.render_animation(aseprite, state, &mut extra);
-            }
-        }
-    }
-}
-
-/// Renders animation frames on standalone entities that have both
-/// [`AnimationLayer`] and [`AnimationState`] directly (e.g. custom materials).
-pub fn render_animation<T: RenderAnimation + Component<Mutability = Mutable>>(
-    mut animations: Query<(&AnimationLayer, &mut T, &AnimationState), Without<SpriteLayers>>,
-    aseprites: Res<Assets<Aseprite>>,
-    mut extra: <T as RenderAnimation>::Extra<'_>,
-) {
-    for (layer, mut target, state) in &mut animations {
+    for (layer, local_frame, parent_ref, mut target) in &mut targets {
+        let frame = local_frame
+            .copied()
+            .or_else(|| parent_ref.and_then(|p| parent_frames.get(p.0).ok().copied()))
+            .unwrap_or_default();
         let Some(aseprite) = aseprites.get(&layer.aseprite) else {
             continue;
         };
-        target.render_animation(aseprite, state, &mut extra);
+        target.render_animation(aseprite, frame.0, &mut extra);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layers::SpriteLayerOf;
+    use bevy::image::TextureAtlasLayout;
+    use bevy::platform::collections::HashMap;
+
+    /// Minimal in-memory Aseprite asset for tests. The renderer only needs
+    /// `frame_indicies` populated for `get_atlas_index`; everything else can
+    /// be defaulted.
+    fn test_aseprite() -> Aseprite {
+        Aseprite {
+            slices: HashMap::default(),
+            tags: HashMap::default(),
+            frame_durations: vec![Duration::from_millis(100); 4],
+            atlas_layout: Handle::<TextureAtlasLayout>::default(),
+            atlas_image: Handle::<Image>::default(),
+            frame_indicies: vec![0, 1, 2, 3],
+            source_path: String::new(),
+            layers: vec![],
+        }
+    }
+
+    /// Test render target: captures the frame index `render_animation` was
+    /// invoked with so tests can assert on the frame-resolution result.
+    #[derive(Component, Default, Clone, Debug)]
+    struct CapturedFrame {
+        last: Option<u16>,
+        calls: u32,
+    }
+
+    impl RenderAnimation for CapturedFrame {
+        type Extra<'e> = ();
+        fn render_animation(&mut self, _aseprite: &Aseprite, frame: u16, _: &mut ()) {
+            self.last = Some(frame);
+            self.calls += 1;
+        }
+    }
+
+    /// Build an app with the render system and a populated Aseprite asset.
+    /// Returns the handle pointing at the inserted asset.
+    fn render_app() -> (App, Handle<Aseprite>) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<Aseprite>();
+        app.init_asset::<Image>();
+        app.init_asset::<TextureAtlasLayout>();
+        app.add_systems(Update, render_children_animation::<CapturedFrame>);
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<Aseprite>>()
+            .add(test_aseprite());
+        (app, handle)
+    }
+
+    fn last_frame(app: &App, entity: Entity) -> Option<u16> {
+        app.world().get::<CapturedFrame>(entity).and_then(|c| c.last)
+    }
+
+    // ---------- Require-component wiring ----------
+
+    /// `AseTexture` requires `AseFrame` — spawning one should populate the
+    /// frame cursor automatically.
+    #[test]
+    fn asetexture_requires_aseframe() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<Aseprite>();
+        let entity = app
+            .world_mut()
+            .spawn(crate::layers::AseTexture::new(Handle::default()))
+            .id();
+        assert!(
+            app.world().get::<AseFrame>(entity).is_some(),
+            "AseFrame should be auto-inserted by AseTexture's require()"
+        );
+    }
+
+    /// `AseAnimation` requires both `AnimationState` and `AseFrame`.
+    #[test]
+    fn aseanimation_requires_aseframe() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let entity = app.world_mut().spawn(AseAnimation::default()).id();
+        assert!(
+            app.world().get::<AseFrame>(entity).is_some(),
+            "AseFrame should be auto-inserted by AseAnimation's require()"
+        );
+        assert!(
+            app.world().get::<AnimationState>(entity).is_some(),
+            "AnimationState should be auto-inserted by AseAnimation's require()"
+        );
+    }
+
+    // ---------- Frame resolution in render_children_animation ----------
+
+    /// Standalone entity with its own AseFrame: renderer reads it directly.
+    #[test]
+    fn render_uses_local_frame() {
+        let (mut app, handle) = render_app();
+        let entity = app
+            .world_mut()
+            .spawn((
+                AnimationLayer::new(handle),
+                AseFrame::new(3),
+                CapturedFrame::default(),
+            ))
+            .id();
+        app.update();
+        assert_eq!(last_frame(&app, entity), Some(3));
+    }
+
+    /// Child without its own AseFrame falls back to the parent's via
+    /// SpriteLayerOf.
+    #[test]
+    fn render_falls_back_to_parent_frame() {
+        let (mut app, handle) = render_app();
+        let parent = app.world_mut().spawn(AseFrame::new(7)).id();
+        let child = app
+            .world_mut()
+            .spawn((
+                AnimationLayer::new(handle),
+                SpriteLayerOf(parent),
+                CapturedFrame::default(),
+            ))
+            .id();
+        app.update();
+        assert_eq!(last_frame(&app, child), Some(7));
+    }
+
+    /// A child with its own AseFrame overrides the parent's — this is the
+    /// per-layer-frame story.
+    #[test]
+    fn render_prefers_local_over_parent() {
+        let (mut app, handle) = render_app();
+        let parent = app.world_mut().spawn(AseFrame::new(7)).id();
+        let child = app
+            .world_mut()
+            .spawn((
+                AnimationLayer::new(handle),
+                SpriteLayerOf(parent),
+                AseFrame::new(2),
+                CapturedFrame::default(),
+            ))
+            .id();
+        app.update();
+        assert_eq!(last_frame(&app, child), Some(2));
+    }
+
+    /// No AseFrame anywhere in scope: renderer falls through to the default
+    /// (frame 0) rather than panicking or skipping the entity.
+    #[test]
+    fn render_defaults_to_frame_zero_when_no_source() {
+        let (mut app, handle) = render_app();
+        let entity = app
+            .world_mut()
+            .spawn((AnimationLayer::new(handle), CapturedFrame::default()))
+            .id();
+        app.update();
+        assert_eq!(last_frame(&app, entity), Some(0));
     }
 }

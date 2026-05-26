@@ -1,4 +1,4 @@
-use crate::animation::{AseAnimation, AnimationLayer};
+use crate::animation::{AnimationLayer, AseFrame};
 use crate::loader::Aseprite;
 use crate::slice::{nine_patch_to_slicer, AseSlice};
 use bevy::image::TextureAtlas;
@@ -145,6 +145,7 @@ pub struct SpriteLayers(Vec<Entity>);
 #[require(Visibility)]
 #[require(InheritedVisibility)]
 #[require(ViewVisibility)]
+#[require(AseFrame)]
 pub struct AseTexture {
     pub aseprite: Handle<Aseprite>,
     pub layers: LayerFilter,
@@ -333,12 +334,12 @@ fn z_from_index(index: usize, total: usize) -> usize {
 fn on_ase_texture_added(
     trigger: On<Add, AseTexture>,
     mut cmd: Commands,
-    query: Query<(&AseTexture, Has<AseAnimation>, Option<&AseFlip>)>,
+    query: Query<(&AseTexture, Option<&AseFlip>)>,
     assets: Res<Assets<Aseprite>>,
     server: Res<AssetServer>,
 ) {
     let entity = trigger.entity;
-    let Ok((tex, has_anim, flip)) = query.get(entity) else {
+    let Ok((tex, flip)) = query.get(entity) else {
         return;
     };
 
@@ -360,7 +361,7 @@ fn on_ase_texture_added(
         return; // Asset not loaded yet; spawn_layers_on_asset_load will handle it.
     };
 
-    spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, has_anim, flip);
+    spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, flip);
 }
 
 /// Spawns children for entities whose asset was not yet loaded when the
@@ -369,7 +370,7 @@ fn on_ase_texture_added(
 fn spawn_layers_on_asset_load(
     mut cmd: Commands,
     mut events: MessageReader<AssetEvent<Aseprite>>,
-    query: Query<(Entity, &AseTexture, Has<AseAnimation>, Option<&AseFlip>), Without<SpriteLayers>>,
+    query: Query<(Entity, &AseTexture, Option<&AseFlip>), Without<SpriteLayers>>,
     assets: Res<Assets<Aseprite>>,
     server: Res<AssetServer>,
 ) {
@@ -377,12 +378,12 @@ fn spawn_layers_on_asset_load(
         let AssetEvent::LoadedWithDependencies { id } = event else {
             continue;
         };
-        for (entity, tex, has_anim, flip) in &query {
+        for (entity, tex, flip) in &query {
             if tex.aseprite.id() == *id {
                 let Some(aseprite) = assets.get(&tex.aseprite) else {
                     continue;
                 };
-                spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, has_anim, flip);
+                spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, flip);
             }
         }
     }
@@ -400,7 +401,7 @@ fn spawn_layers_on_asset_load(
 fn update_layers(
     mut cmd: Commands,
     query: Query<
-        (Entity, &AseTexture, Has<AseAnimation>, &SpriteLayers, Option<&AseFlip>),
+        (Entity, &AseTexture, &SpriteLayers, Option<&AseFlip>),
         Changed<AseTexture>,
     >,
     layer_ids: Query<&LayerId, With<SpriteLayerOf>>,
@@ -409,7 +410,7 @@ fn update_layers(
     assets: Res<Assets<Aseprite>>,
     server: Res<AssetServer>,
 ) {
-    for (entity, tex, has_anim, sprite_layers, flip) in &query {
+    for (entity, tex, sprite_layers, flip) in &query {
         let Some(aseprite) = assets.get(&tex.aseprite) else {
             continue;
         };
@@ -418,7 +419,7 @@ fn update_layers(
             for child in sprite_layers.iter() {
                 cmd.entity(child).despawn();
             }
-            spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, has_anim, flip);
+            spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, flip);
         } else {
             let all_layers: Vec<LayerId> = aseprite.layer_ids().collect();
 
@@ -439,7 +440,7 @@ fn update_layers(
                 for child in sprite_layers.iter() {
                     cmd.entity(child).despawn();
                 }
-                spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, has_anim, flip);
+                spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, flip);
             } else {
                 // Fast path: toggle visibility and reapply z-ordering.
                 let visible = visible_layers(aseprite, &tex.layers);
@@ -581,11 +582,10 @@ fn spawn_children(
     parent: Entity,
     aseprite: &Aseprite,
     tex: &AseTexture,
-    has_anim: bool,
     flip: Option<&AseFlip>,
 ) {
     if tex.baked {
-        spawn_baked_child(cmd, parent, aseprite, tex, has_anim, flip);
+        spawn_baked_child(cmd, parent, aseprite, tex, flip);
     } else {
         // Spawn ALL layers; visibility is determined by the filter.
         let visible = visible_layers(aseprite, &tex.layers);
@@ -598,7 +598,6 @@ fn spawn_children(
             parent,
             aseprite,
             tex,
-            has_anim,
             &default_order,
             order,
             &visible,
@@ -612,7 +611,6 @@ fn spawn_baked_child(
     parent: Entity,
     aseprite: &Aseprite,
     tex: &AseTexture,
-    has_anim: bool,
     flip: Option<&AseFlip>,
 ) {
     let common = (
@@ -648,10 +646,8 @@ fn spawn_baked_child(
                 sprite,
                 Transform::from_translation(offset_translation),
                 AppliedOffset(tex.offset),
+                AnimationLayer::new(tex.aseprite.clone()),
             ));
-            if has_anim {
-                entity_cmd.insert(AnimationLayer::new(tex.aseprite.clone()));
-            }
             if let Some(slice_id) = &tex.slice {
                 entity_cmd.insert(AseSlice {
                     name: slice_id.as_str().to_owned(),
@@ -688,10 +684,8 @@ fn spawn_baked_child(
                     ..default()
                 },
                 AppliedOffset(tex.offset),
+                AnimationLayer::new(tex.aseprite.clone()),
             ));
-            if has_anim {
-                entity_cmd.insert(AnimationLayer::new(tex.aseprite.clone()));
-            }
             if let Some(slice_id) = &tex.slice {
                 entity_cmd.insert(AseSlice {
                     name: slice_id.as_str().to_owned(),
@@ -716,7 +710,6 @@ fn spawn_layered_children(
     parent: Entity,
     aseprite: &Aseprite,
     tex: &AseTexture,
-    has_anim: bool,
     layers: &[LayerId],
     order: &[LayerId],
     visible: &[LayerId],
@@ -781,11 +774,9 @@ fn spawn_layered_children(
                     Transform::from_translation(translation),
                     AppliedOffset(tex.offset),
                     visibility,
-                ));
-                if has_anim {
-                    entity_cmd.insert(AnimationLayer::new(layer_handle.clone()));
-                }
-                if let Some(slice_id) = &tex.slice {
+                    AnimationLayer::new(layer_handle.clone()),
+                    ));
+                    if let Some(slice_id) = &tex.slice {
                     entity_cmd.insert(AseSlice {
                         name: slice_id.as_str().to_owned(),
                         aseprite: layer_handle,
@@ -823,11 +814,9 @@ fn spawn_layered_children(
                     ZIndex(z as i32),
                     AppliedOffset(tex.offset),
                     visibility,
-                ));
-                if has_anim {
-                    entity_cmd.insert(AnimationLayer::new(layer_handle.clone()));
-                }
-                if let Some(slice_id) = &tex.slice {
+                    AnimationLayer::new(layer_handle.clone()),
+                    ));
+                    if let Some(slice_id) = &tex.slice {
                     entity_cmd.insert(AseSlice {
                         name: slice_id.as_str().to_owned(),
                         aseprite: layer_handle,
