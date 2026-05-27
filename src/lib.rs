@@ -14,9 +14,9 @@ pub(crate) mod slice;
 
 pub mod prelude {
     pub use crate::animation::{
-        render_children_animation, AnimationDirection, AnimationEvents, AnimationLayer,
-        AnimationRepeat, AnimationState, AseAnimation, AseFrame, ManualTick, NextFrameEvent,
-        PlayDirection, RenderAnimation,
+        render_children_animation, resolve_frame, AnimationDirection, AnimationEvents,
+        AnimationLayer, AnimationRepeat, AnimationState, AseAnimation, AseFrame, AseTag,
+        ManualTick, NextFrameEvent, PlayDirection, RenderAnimation,
     };
     pub use crate::layers::{
         AseFlip, AseTexture, LayerEntry, LayerFilter, LayerId, RenderTarget, SliceId,
