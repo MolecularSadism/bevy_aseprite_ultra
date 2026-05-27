@@ -31,6 +31,7 @@ impl Plugin for AsepriteAnimationPlugin {
         app.register_type::<AseAnimation>();
         app.register_type::<AnimationState>();
         app.register_type::<AseFrame>();
+        app.register_type::<AseTag>();
         app.register_type::<PlayDirection>();
         app.register_type::<AnimationRepeat>();
     }
@@ -145,6 +146,66 @@ impl AseFrame {
     pub fn get(&self) -> u16 {
         self.0
     }
+}
+
+/// Selects a named aseprite tag for tag-relative frame addressing.
+///
+/// When present alongside [`AseFrame`], the frame index is interpreted as an
+/// **offset into the tag's range** rather than an absolute frame index. The
+/// renderer resolves the absolute frame as `tag.range.start + AseFrame.0`,
+/// clamped to the tag's range.
+///
+/// When absent (or when the tag name does not resolve in the asset), the
+/// renderer reads [`AseFrame`] as an absolute frame index — existing behavior.
+///
+/// This enables picking "frame N of tag T" without spawning [`AseAnimation`].
+/// Useful for terrain tiles and other static assets where tags label variants
+/// rather than animation sequences.
+///
+/// ```rust
+/// # use bevy::prelude::*;
+/// # use bevy_aseprite_ultra::prelude::*;
+/// # fn example(mut cmd: Commands, server: Res<AssetServer>) {
+/// // First frame of the "Rock" tag — no animation.
+/// cmd.spawn((
+///     AseTexture::new(server.load("tiles.aseprite")).sprite(),
+///     AseTag::new("Rock"),
+///     AseFrame::new(0),
+/// ));
+/// # }
+/// ```
+///
+/// On entities with [`AseTexture`], the parent's `AseTag` propagates to layer
+/// children that do not have their own (same pattern as [`AseFrame`]).
+#[derive(Component, Reflect, Clone, Debug)]
+#[reflect]
+pub struct AseTag(pub String);
+
+impl AseTag {
+    pub fn new(name: impl Into<String>) -> Self {
+        AseTag(name.into())
+    }
+
+    pub fn get(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Resolve the absolute frame index a renderer should use, given the entity's
+/// [`AseFrame`] and optional [`AseTag`].
+///
+/// - No tag, or tag does not exist in the asset: returns `frame.0` as-is.
+/// - Tag exists: returns `tag.range.start + frame.0`, clamped to the tag's range.
+pub fn resolve_frame(aseprite: &Aseprite, frame: AseFrame, tag: Option<&AseTag>) -> u16 {
+    let Some(tag) = tag else {
+        return frame.0;
+    };
+    let Some(meta) = aseprite.tags.get(&tag.0) else {
+        return frame.0;
+    };
+    let start = *meta.range.start();
+    let end = *meta.range.end();
+    start.saturating_add(frame.0).min(end)
 }
 
 // ---- Components ----
@@ -492,6 +553,7 @@ pub fn update_aseprite_animation(
         &mut AseAnimation,
         &mut AnimationState,
         &mut AseFrame,
+        Option<&mut AseTag>,
         Option<&AseTexture>,
         Option<&AnimationLayer>,
         Has<ManualTick>,
@@ -499,7 +561,7 @@ pub fn update_aseprite_animation(
     aseprites: Res<Assets<Aseprite>>,
     time: Res<Time>,
 ) -> Result<(), BevyError> {
-    for (entity, mut animation, mut state, mut frame, tex, layer, is_manual) in
+    for (entity, mut animation, mut state, mut frame, mut ase_tag, tex, layer, is_manual) in
         animations.iter_mut()
     {
         let Some(handle) = resolve_handle(tex, layer) else {
@@ -524,6 +586,25 @@ pub fn update_aseprite_animation(
             None => 0..=(aseprite.frame_durations.len() as u16 - 1),
         };
 
+        // Mirror the animation's tag into AseTag (when present) so the renderer
+        // can resolve tag-relative frames consistently. AseFrame is treated as
+        // tag-relative on this entity.
+        let has_tag = ase_tag.is_some();
+        if let Some(tag) = ase_tag.as_deref_mut() {
+            let desired = animation.tag.clone().unwrap_or_default();
+            if tag.0 != desired {
+                tag.0 = desired;
+            }
+        }
+
+        // Working range/index: absolute when no AseTag, relative when AseTag is present.
+        let (lo, hi) = if has_tag {
+            (0, range.end() - range.start())
+        } else {
+            (*range.start(), *range.end())
+        };
+        let working_range = lo..=hi;
+
         // Resolve remaining_cycles from override or file when needed.
         // remaining_cycles counts how many more times the animation will restart
         // after the current play: Count(1) → 0 remaining, Count(2) → 1 remaining, etc.
@@ -539,22 +620,22 @@ pub fn update_aseprite_animation(
             animation.needs_repeat_init = false;
         }
 
-        if !range.contains(&frame.0) {
+        if !working_range.contains(&frame.0) {
             if !animation.hold_relative_frame {
-                frame.0 = *range.start();
+                frame.0 = lo;
                 state.relative_frame = 0;
                 animation.relative_group = 0;
                 animation.new_relative_group = 0;
             } else {
                 if animation.new_relative_group != animation.relative_group {
                     animation.relative_group = animation.new_relative_group;
-                    frame.0 = *range.start();
+                    frame.0 = lo;
                     state.relative_frame = 0;
                     state.elapsed = std::time::Duration::ZERO;
                 } else {
-                    state.relative_frame =
-                        (state.relative_frame) % (*range.end() * range.start() - 1);
-                    frame.0 = *range.start() + state.relative_frame;
+                    let span = hi - lo + 1;
+                    state.relative_frame = state.relative_frame % span;
+                    frame.0 = lo + state.relative_frame;
                 }
             }
         }
@@ -570,7 +651,9 @@ pub fn update_aseprite_animation(
         state.elapsed +=
             std::time::Duration::from_secs_f32(time.delta_secs() * animation.speed);
 
-        let Some(frame_duration) = aseprite.frame_durations.get(usize::from(frame.0)) else {
+        // frame_durations is indexed by absolute frame.
+        let absolute_frame = if has_tag { range.start() + frame.0 } else { frame.0 };
+        let Some(frame_duration) = aseprite.frame_durations.get(usize::from(absolute_frame)) else {
             return Ok(());
         };
 
@@ -596,12 +679,15 @@ fn next_frame(
         &mut AnimationState,
         &mut AseFrame,
         &mut AseAnimation,
+        Has<AseTag>,
         Option<&AseTexture>,
         Option<&AnimationLayer>,
     )>,
     aseprites: Res<Assets<Aseprite>>,
 ) {
-    let Ok((mut state, mut frame, mut anim, tex, layer)) = animations.get_mut(trigger.0) else {
+    let Ok((mut state, mut frame, mut anim, has_tag, tex, layer)) =
+        animations.get_mut(trigger.0)
+    else {
         return;
     };
 
@@ -612,7 +698,7 @@ fn next_frame(
         return;
     };
 
-    let (range, direction) = match anim
+    let (abs_range, direction) = match anim
         .tag
         .as_ref()
         .map(|t| aseprite.tags.get(t))
@@ -632,6 +718,14 @@ fn next_frame(
                 .unwrap_or(AnimationDirection::Forward);
             (0..=(aseprite.frame_durations.len() as u16 - 1), dir)
         }
+    };
+
+    // Range used for incrementing AseFrame: relative (0-based) when AseTag is
+    // present, absolute otherwise.
+    let range = if has_tag {
+        0..=(abs_range.end() - abs_range.start())
+    } else {
+        abs_range.clone()
     };
 
     // Helper: handle end-of-cycle logic using remaining_cycles.
@@ -737,22 +831,26 @@ pub fn render_children_animation<T: RenderAnimation + Component<Mutability = Mut
     mut targets: Query<(
         &AnimationLayer,
         Option<&AseFrame>,
+        Option<&AseTag>,
         Option<&SpriteLayerOf>,
         &mut T,
     )>,
-    parent_frames: Query<&AseFrame>,
+    parent_frames: Query<(&AseFrame, Option<&AseTag>)>,
     aseprites: Res<Assets<Aseprite>>,
     mut extra: <T as RenderAnimation>::Extra<'_>,
 ) {
-    for (layer, local_frame, parent_ref, mut target) in &mut targets {
+    for (layer, local_frame, local_tag, parent_ref, mut target) in &mut targets {
+        let parent = parent_ref.and_then(|p| parent_frames.get(p.0).ok());
         let frame = local_frame
             .copied()
-            .or_else(|| parent_ref.and_then(|p| parent_frames.get(p.0).ok().copied()))
+            .or_else(|| parent.map(|(f, _)| *f))
             .unwrap_or_default();
+        let tag = local_tag.or_else(|| parent.and_then(|(_, t)| t));
         let Some(aseprite) = aseprites.get(&layer.aseprite) else {
             continue;
         };
-        target.render_animation(aseprite, frame.0, &mut extra);
+        let absolute = resolve_frame(aseprite, frame, tag);
+        target.render_animation(aseprite, absolute, &mut extra);
     }
 }
 
@@ -918,5 +1016,128 @@ mod tests {
             .id();
         app.update();
         assert_eq!(last_frame(&app, entity), Some(0));
+    }
+
+    // ---------- AseTag / resolve_frame ----------
+
+    /// Build a test aseprite with a single tag spanning frames 2..=3.
+    fn tagged_aseprite() -> Aseprite {
+        use crate::loader::TagMeta;
+        let mut ase = test_aseprite();
+        ase.tags.insert(
+            "Rock".to_string(),
+            TagMeta {
+                direction: RawDirection::Forward,
+                range: 2..=3,
+                repeat: 0,
+            },
+        );
+        ase
+    }
+
+    fn tagged_render_app() -> (App, Handle<Aseprite>) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<Aseprite>();
+        app.init_asset::<Image>();
+        app.init_asset::<TextureAtlasLayout>();
+        app.add_systems(Update, render_children_animation::<CapturedFrame>);
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<Aseprite>>()
+            .add(tagged_aseprite());
+        (app, handle)
+    }
+
+    /// `resolve_frame` adds the tag's range start to AseFrame.
+    #[test]
+    fn resolve_frame_offsets_into_tag_range() {
+        let ase = tagged_aseprite();
+        let tag = AseTag::new("Rock");
+        assert_eq!(resolve_frame(&ase, AseFrame::new(0), Some(&tag)), 2);
+        assert_eq!(resolve_frame(&ase, AseFrame::new(1), Some(&tag)), 3);
+    }
+
+    /// Out-of-range relative frames are clamped to the tag's last frame.
+    #[test]
+    fn resolve_frame_clamps_past_tag_end() {
+        let ase = tagged_aseprite();
+        let tag = AseTag::new("Rock");
+        assert_eq!(resolve_frame(&ase, AseFrame::new(5), Some(&tag)), 3);
+    }
+
+    /// Without an AseTag, AseFrame is absolute.
+    #[test]
+    fn resolve_frame_passthrough_without_tag() {
+        let ase = tagged_aseprite();
+        assert_eq!(resolve_frame(&ase, AseFrame::new(2), None), 2);
+    }
+
+    /// Unknown tag name falls back to absolute AseFrame.
+    #[test]
+    fn resolve_frame_unknown_tag_passes_through() {
+        let ase = tagged_aseprite();
+        let tag = AseTag::new("Missing");
+        assert_eq!(resolve_frame(&ase, AseFrame::new(2), Some(&tag)), 2);
+    }
+
+    /// Renderer applies AseTag offset locally on the entity.
+    #[test]
+    fn render_uses_local_tag() {
+        let (mut app, handle) = tagged_render_app();
+        let entity = app
+            .world_mut()
+            .spawn((
+                AnimationLayer::new(handle),
+                AseTag::new("Rock"),
+                AseFrame::new(1),
+                CapturedFrame::default(),
+            ))
+            .id();
+        app.update();
+        // Rock spans 2..=3, offset 1 -> absolute frame 3.
+        assert_eq!(last_frame(&app, entity), Some(3));
+    }
+
+    /// Parent's AseTag propagates to children that don't have their own.
+    #[test]
+    fn render_inherits_parent_tag() {
+        let (mut app, handle) = tagged_render_app();
+        let parent = app
+            .world_mut()
+            .spawn((AseFrame::new(0), AseTag::new("Rock")))
+            .id();
+        let child = app
+            .world_mut()
+            .spawn((
+                AnimationLayer::new(handle),
+                SpriteLayerOf(parent),
+                CapturedFrame::default(),
+            ))
+            .id();
+        app.update();
+        // Rock starts at 2, offset 0 -> absolute frame 2.
+        assert_eq!(last_frame(&app, child), Some(2));
+    }
+
+    /// A child's own AseTag overrides the parent's.
+    #[test]
+    fn render_local_tag_overrides_parent() {
+        let (mut app, handle) = tagged_render_app();
+        // Parent says no tag (absolute mode); child overrides with Rock.
+        let parent = app.world_mut().spawn(AseFrame::new(0)).id();
+        let child = app
+            .world_mut()
+            .spawn((
+                AnimationLayer::new(handle),
+                SpriteLayerOf(parent),
+                AseTag::new("Rock"),
+                AseFrame::new(1),
+                CapturedFrame::default(),
+            ))
+            .id();
+        app.update();
+        assert_eq!(last_frame(&app, child), Some(3));
     }
 }
