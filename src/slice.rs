@@ -202,7 +202,20 @@ pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
             continue;
         };
         let Some(slice_meta) = aseprite.slices.get(&slice.name) else {
-            warn!("slice does not exist {}", slice.name);
+            #[cfg(debug_assertions)]
+            {
+                let source = slice
+                    .aseprite
+                    .path()
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| format!("<handle {:?}>", slice.aseprite.id()));
+                warn!(
+                    "slice {:?} does not exist in aseprite '{}' (available: {:?})",
+                    slice.name,
+                    source,
+                    aseprite.slices.keys().collect::<Vec<_>>(),
+                );
+            }
             continue;
         };
 
