@@ -1,5 +1,6 @@
 use crate::layers::{AseTexture, SpriteLayerOf};
 use crate::loader::Aseprite;
+use crate::slice::AseSlice;
 use anyhow::Context;
 use aseprite_loader::binary::chunks::tags::AnimationDirection as RawDirection;
 use bevy::{
@@ -828,13 +829,20 @@ fn next_frame(
 /// Whether the frame is being driven by [`AseAnimation`] or set manually is
 /// irrelevant — the renderer just reads whichever [`AseFrame`] is in scope.
 pub fn render_children_animation<T: RenderAnimation + Component<Mutability = Mutable>>(
-    mut targets: Query<(
-        &AnimationLayer,
-        Option<&AseFrame>,
-        Option<&AseTag>,
-        Option<&SpriteLayerOf>,
-        &mut T,
-    )>,
+    mut targets: Query<
+        (
+            &AnimationLayer,
+            Option<&AseFrame>,
+            Option<&AseTag>,
+            Option<&SpriteLayerOf>,
+            &mut T,
+        ),
+        // Slice-configured children render their named slice region (and 9-patch)
+        // via `render_slice`, which owns the same target component. Skip them
+        // here so the full-frame renderer doesn't clobber the slice's atlas
+        // index and 9-patch image mode.
+        Without<AseSlice>,
+    >,
     parent_frames: Query<(&AseFrame, Option<&AseTag>)>,
     aseprites: Res<Assets<Aseprite>>,
     mut extra: <T as RenderAnimation>::Extra<'_>,
@@ -984,6 +992,30 @@ mod tests {
             .id();
         app.update();
         assert_eq!(last_frame(&app, child), Some(7));
+    }
+
+    /// A slice-configured child carries both `AnimationLayer` (for handle
+    /// resolution) and `AseSlice` (rendered by `render_slice`). The frame
+    /// renderer must skip it so it doesn't clobber the slice's atlas index /
+    /// 9-patch. Regression test for map-screen UI losing slice/9-patch data.
+    #[test]
+    fn render_skips_slice_targets() {
+        let (mut app, handle) = render_app();
+        let entity = app
+            .world_mut()
+            .spawn((
+                AnimationLayer::new(handle.clone()),
+                AseFrame::new(2),
+                AseSlice::new(handle, "panel"),
+                CapturedFrame::default(),
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().get::<CapturedFrame>(entity).map(|c| c.calls),
+            Some(0),
+            "frame renderer must not touch slice-rendered entities"
+        );
     }
 
     /// A child with its own AseFrame overrides the parent's — this is the
