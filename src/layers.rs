@@ -739,7 +739,13 @@ fn spawn_layered_children(
         // per-layer index once the sub-asset resolves.
         let layer_ase = assets.get(&layer_handle).unwrap_or(aseprite);
 
-        let (index, slicer) = initial_atlas(layer_ase, tex.slice.as_ref());
+        // Slices are defined globally on the file, not per-layer. Use the
+        // parent aseprite for the initial slice atlas lookup so it is correct
+        // from the first frame (the parent is guaranteed to be loaded here).
+        // For non-slice entities, use the per-layer asset so frame 0 is the
+        // layer-specific frame rather than the composite one.
+        let atlas_ase = if tex.slice.is_some() { aseprite } else { layer_ase };
+        let (index, slicer) = initial_atlas(atlas_ase, tex.slice.as_ref());
 
         let common = (
             ChildOf(parent),
@@ -779,7 +785,7 @@ fn spawn_layered_children(
                     if let Some(slice_id) = &tex.slice {
                     entity_cmd.insert(AseSlice {
                         name: slice_id.as_str().to_owned(),
-                        aseprite: layer_handle,
+                        aseprite: tex.aseprite.clone(),
                     });
                 }
             }
@@ -819,7 +825,7 @@ fn spawn_layered_children(
                     if let Some(slice_id) = &tex.slice {
                     entity_cmd.insert(AseSlice {
                         name: slice_id.as_str().to_owned(),
-                        aseprite: layer_handle,
+                        aseprite: tex.aseprite.clone(),
                     });
                 }
             }
