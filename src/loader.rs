@@ -144,8 +144,8 @@ pub struct SliceKeyMeta {
 
 /// Metadata for a named slice region in the aseprite file.
 ///
-/// Contains the slice rectangle, its position in the atlas, optional
-/// pivot offset, and optional 9-patch insets for UI scaling.
+/// Contains the slice rectangle, its default (frame 0) position in the atlas,
+/// optional pivot offset, and optional 9-patch insets for UI scaling.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "asset_processing", derive(Serialize, Deserialize))]
 pub struct SliceMeta {
@@ -154,6 +154,30 @@ pub struct SliceMeta {
     pub pivot: Option<Vec2>,
     pub nine_patch: Option<Vec4>,
     pub keys: Vec<SliceKeyMeta>,
+    /// The slice's own atlas position for each frame of its aseprite variant
+    /// (composite/all/per-layer), parallel to [`Aseprite::frame_indicies`].
+    /// A slice is defined in canvas coordinates, so its crop rect is
+    /// identical across frames — only *which frame's rendered image* it
+    /// crops into changes. Empty for slices loaded before this field existed
+    /// (e.g. deserialized from an older `asset_processing` cache); callers
+    /// should fall back to `atlas_id` in that case (see
+    /// [`Self::atlas_id_for_frame`]).
+    pub frame_atlas_ids: Vec<usize>,
+}
+
+impl SliceMeta {
+    /// This slice's atlas position for a specific absolute frame number.
+    ///
+    /// Falls back to `atlas_id` (the slice's frame-0 position) when
+    /// `frame_atlas_ids` has no entry for `frame` — out of range, or empty
+    /// because it was loaded before this field existed.
+    #[must_use]
+    pub fn atlas_id_for_frame(&self, frame: usize) -> usize {
+        self.frame_atlas_ids
+            .get(frame)
+            .copied()
+            .unwrap_or(self.atlas_id)
+    }
 }
 
 impl From<&SliceMeta> for Anchor {
@@ -392,41 +416,51 @@ impl AssetLoader for AsepriteLoader {
             })
             .collect();
 
-        // Build a SliceMeta map for a specific variant by offsetting canvas-
-        // relative slice rects to the variant's first frame position in the
-        // packed atlas.
+        // Build a SliceMeta map for a specific variant by offsetting each of
+        // its frames' canvas-relative slice rects to that frame's position in
+        // the packed atlas. A slice's canvas rect is the same across every
+        // frame (it's defined once, in canvas coordinates); only the
+        // underlying frame image being cropped changes, so this registers one
+        // atlas entry per frame, mirroring `frame_indicies` (see
+        // `SliceMeta::atlas_id_for_frame`).
         let build_slices =
-            |frame_index: usize, layout: &mut TextureAtlasLayout| -> HashMap<String, SliceMeta> {
-                let frame_rect = layout.textures[frame_index];
+            |indices: &[usize], layout: &mut TextureAtlasLayout| -> HashMap<String, SliceMeta> {
                 raw_slice_data
                     .iter()
                     .map(|raw| {
-                        let atlas_rect = URect::from_corners(
-                            frame_rect.min + raw.canvas_min,
-                            frame_rect.min + raw.canvas_max,
-                        );
-                        let layout_id = layout.add_texture(atlas_rect);
+                        let frame_atlas_ids: Vec<usize> = indices
+                            .iter()
+                            .map(|&frame_index| {
+                                let frame_rect = layout.textures[frame_index];
+                                let atlas_rect = URect::from_corners(
+                                    frame_rect.min + raw.canvas_min,
+                                    frame_rect.min + raw.canvas_max,
+                                );
+                                layout.add_texture(atlas_rect)
+                            })
+                            .collect();
                         (
                             raw.name.clone(),
                             SliceMeta {
                                 rect: raw.rect,
-                                atlas_id: layout_id,
+                                atlas_id: frame_atlas_ids.first().copied().unwrap_or_default(),
                                 pivot: raw.pivot,
                                 nine_patch: raw.nine_patch,
                                 keys: raw.keys.clone(),
+                                frame_atlas_ids,
                             },
                         )
                     })
                     .collect()
             };
 
-        let composite_slices = build_slices(composite_indicies[0], &mut layout);
-        let all_slices = build_slices(all_indicies[0], &mut layout);
+        let composite_slices = build_slices(&composite_indicies, &mut layout);
+        let all_slices = build_slices(&all_indicies, &mut layout);
 
         let mut per_layer_data: Vec<(LayerId, Vec<usize>, HashMap<String, SliceMeta>)> =
             Vec::new();
         for (layer_id, layer_indicies) in per_layer_resolved {
-            let slices = build_slices(layer_indicies[0], &mut layout);
+            let slices = build_slices(&layer_indicies, &mut layout);
             per_layer_data.push((layer_id, layer_indicies, slices));
         }
 

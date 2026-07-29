@@ -183,19 +183,33 @@ pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
     mut slices: Query<(
         &mut T,
         Ref<AseSlice>,
-        Option<&AseFrame>,
-        Option<&AseTag>,
+        Option<Ref<AseFrame>>,
+        Option<Ref<AseTag>>,
         Option<&SpriteLayerOf>,
         Option<&mut Anchor>,
     )>,
-    parent_frames: Query<(&AseFrame, Option<&AseTag>)>,
+    parent_frames: Query<(Ref<AseFrame>, Option<Ref<AseTag>>)>,
     aseprites: Res<Assets<Aseprite>>,
     mut extra: <T as RenderSlice>::Extra<'_>,
 ) {
     let asset_change = aseprites.is_changed();
 
     for (mut target, slice, local_frame, local_tag, parent_ref, maybe_anchor) in &mut slices {
-        if !asset_change && !slice.is_changed() {
+        let parent = parent_ref.and_then(|p| parent_frames.get(p.0).ok());
+
+        // `AseAnimation` advances `AseFrame`/`AseTag` every tick — locally, or
+        // on the `AseTexture` parent for layered children — without ever
+        // touching `AseSlice` itself. Watching only `slice.is_changed()`
+        // would therefore render the frame this slice first resolved to and
+        // then never update again for the lifetime of the animation.
+        let frame_or_tag_changed = local_frame.as_ref().is_some_and(Ref::is_changed)
+            || local_tag.as_ref().is_some_and(Ref::is_changed)
+            || parent.as_ref().is_some_and(|(frame, _)| frame.is_changed())
+            || parent
+                .as_ref()
+                .is_some_and(|(_, tag)| tag.as_ref().is_some_and(Ref::is_changed));
+
+        if !asset_change && !slice.is_changed() && !frame_or_tag_changed {
             continue;
         }
         let Some(aseprite) = aseprites.get(&slice.aseprite) else {
@@ -220,35 +234,47 @@ pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
         };
 
         // Resolve AseFrame / AseTag: prefer local, then fall back to the parent's.
-        let parent = parent_ref.and_then(|p| parent_frames.get(p.0).ok());
-        let maybe_frame = local_frame.copied().or_else(|| parent.map(|(f, _)| *f));
-        let maybe_tag = local_tag.or_else(|| parent.and_then(|(_, t)| t));
+        let maybe_frame = local_frame
+            .as_deref()
+            .copied()
+            .or_else(|| parent.as_ref().map(|(f, _)| **f));
+        let maybe_tag = local_tag
+            .as_deref()
+            .or_else(|| parent.as_ref().and_then(|(_, t)| t.as_deref()));
 
-        // Apply the frame-specific slice key (rect / pivot / 9-patch) when the
-        // current frame matches one. Works for animated and statically-set
-        // frames alike.
+        // A slice is defined in canvas coordinates, so its crop rect is the
+        // same on every frame — only *which frame's rendered image* it crops
+        // into changes as the animation plays. Re-point atlas_id at the
+        // current frame's own position every time, then layer an explicit
+        // per-frame key (rect/pivot/9-patch) on top when Aseprite's slice
+        // timeline defines one for this exact frame.
         let effective_meta = if let Some(frame) = maybe_frame {
             let absolute = resolve_frame(aseprite, frame, maybe_tag);
             let frame_idx = usize::from(absolute);
+            let atlas_id = slice_meta.atlas_id_for_frame(frame_idx);
             if let Some(key) = slice_meta.keys.iter().find(|k| k.frame == frame_idx) {
-                &SliceMeta {
+                SliceMeta {
                     rect: key.rect,
-                    atlas_id: slice_meta.atlas_id,
+                    atlas_id,
                     pivot: key.pivot.or(slice_meta.pivot),
                     nine_patch: key.nine_patch.or(slice_meta.nine_patch),
                     keys: vec![],
+                    frame_atlas_ids: vec![],
                 }
             } else {
-                slice_meta
+                SliceMeta {
+                    atlas_id,
+                    ..slice_meta.clone()
+                }
             }
         } else {
-            slice_meta
+            slice_meta.clone()
         };
 
         if let Some(mut anchor) = maybe_anchor {
-            *anchor = Anchor::from(effective_meta);
+            *anchor = Anchor::from(&effective_meta);
         }
 
-        target.render_slice(aseprite, effective_meta, &mut extra);
+        target.render_slice(aseprite, &effective_meta, &mut extra);
     }
 }
