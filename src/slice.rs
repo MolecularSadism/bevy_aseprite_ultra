@@ -84,14 +84,23 @@ impl RenderSlice for ImageNode {
             layout: aseprite.atlas_layout.clone(),
             index: slice_meta.atlas_id,
         });
-        // The nine-patch the artist authored is the default treatment; a mode
-        // the caller set themselves wins, so a slice can be tiled, stretched,
-        // or sliced on borders of the call site's choosing.
-        if matches!(self.image_mode, NodeImageMode::Auto)
-            && let Some(np) = slice_meta.nine_patch
-        {
-            self.image_mode =
-                NodeImageMode::Sliced(nine_patch_to_slicer(np, slice_meta.rect.size()));
+        // The centre the artist dragged out in Aseprite is the border, always:
+        // a nine-patch is a property of the art, not of what draws it. A call
+        // site that already asked to be sliced keeps the rest of its slicer —
+        // how the middle and sides scale, and the corner cap — because those
+        // have no representation in the file.
+        if let Some(np) = slice_meta.nine_patch {
+            let border = nine_patch_to_slicer(np, slice_meta.rect.size()).border;
+            self.image_mode = NodeImageMode::Sliced(match &self.image_mode {
+                NodeImageMode::Sliced(slicer) => TextureSlicer {
+                    border,
+                    ..slicer.clone()
+                },
+                _ => TextureSlicer {
+                    border,
+                    ..default()
+                },
+            });
         }
     }
 }
@@ -104,11 +113,18 @@ impl RenderSlice for Sprite {
             layout: aseprite.atlas_layout.clone(),
             index: slice_meta.atlas_id,
         });
-        if matches!(self.image_mode, SpriteImageMode::Auto)
-            && let Some(np) = slice_meta.nine_patch
-        {
-            self.image_mode =
-                SpriteImageMode::Sliced(nine_patch_to_slicer(np, slice_meta.rect.size()));
+        if let Some(np) = slice_meta.nine_patch {
+            let border = nine_patch_to_slicer(np, slice_meta.rect.size()).border;
+            self.image_mode = SpriteImageMode::Sliced(match &self.image_mode {
+                SpriteImageMode::Sliced(slicer) => TextureSlicer {
+                    border,
+                    ..slicer.clone()
+                },
+                _ => TextureSlicer {
+                    border,
+                    ..default()
+                },
+            });
         }
     }
 }

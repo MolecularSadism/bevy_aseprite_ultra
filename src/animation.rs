@@ -10,7 +10,7 @@ use bevy::{
     prelude::*,
     sprite::Sprite,
     sprite_render::Material2d,
-    ui::{widget::ImageNode, UiSystems},
+    ui::{UiSystems, widget::ImageNode},
 };
 use std::{collections::VecDeque, time::Duration};
 
@@ -48,12 +48,7 @@ impl Plugin for AsepriteAnimationPlugin {
 pub trait RenderAnimation {
     /// An extra system parameter used in rendering. Use a tuple if many are required.
     type Extra<'e>;
-    fn render_animation(
-        &mut self,
-        aseprite: &Aseprite,
-        frame: u16,
-        extra: &mut Self::Extra<'_>,
-    );
+    fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, extra: &mut Self::Extra<'_>);
 }
 
 impl RenderAnimation for ImageNode {
@@ -80,12 +75,7 @@ impl RenderAnimation for Sprite {
 
 impl<M: Material2d + RenderAnimation> RenderAnimation for MeshMaterial2d<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderAnimation>::Extra<'e>);
-    fn render_animation(
-        &mut self,
-        aseprite: &Aseprite,
-        frame: u16,
-        extra: &mut Self::Extra<'_>,
-    ) {
+    fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, extra: &mut Self::Extra<'_>) {
         let Some(material) = extra.0.get_mut(&*self) else {
             return;
         };
@@ -95,12 +85,7 @@ impl<M: Material2d + RenderAnimation> RenderAnimation for MeshMaterial2d<M> {
 
 impl<M: UiMaterial + RenderAnimation> RenderAnimation for MaterialNode<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderAnimation>::Extra<'e>);
-    fn render_animation(
-        &mut self,
-        aseprite: &Aseprite,
-        frame: u16,
-        extra: &mut Self::Extra<'_>,
-    ) {
+    fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, extra: &mut Self::Extra<'_>) {
         let Some(material) = extra.0.get_mut(&*self) else {
             return;
         };
@@ -111,12 +96,7 @@ impl<M: UiMaterial + RenderAnimation> RenderAnimation for MaterialNode<M> {
 #[cfg(feature = "3d")]
 impl<M: Material + RenderAnimation> RenderAnimation for MeshMaterial3d<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderAnimation>::Extra<'e>);
-    fn render_animation(
-        &mut self,
-        aseprite: &Aseprite,
-        frame: u16,
-        extra: &mut Self::Extra<'_>,
-    ) {
+    fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, extra: &mut Self::Extra<'_>) {
         let Some(material) = extra.0.get_mut(&*self) else {
             return;
         };
@@ -320,11 +300,7 @@ impl AseAnimation {
 
     /// Chains an animation after the current one is done. Pass `None` for
     /// repeat to use the file's tag repeat, or `Some(repeat)` to override.
-    pub fn with_then(
-        mut self,
-        tag: impl Into<String>,
-        repeat: Option<AnimationRepeat>,
-    ) -> Self {
+    pub fn with_then(mut self, tag: impl Into<String>, repeat: Option<AnimationRepeat>) -> Self {
         self.queue.push_back((tag.into(), repeat));
         self
     }
@@ -352,11 +328,7 @@ impl AseAnimation {
     /// Instantly starts playing a new animation starting with same relative frame
     /// only if the new relative group is the same as the previous one.
     /// Uses the file's tag repeat count.
-    pub fn play_with_relative_group(
-        &mut self,
-        tag: impl Into<String>,
-        new_relative_group: u16,
-    ) {
+    pub fn play_with_relative_group(&mut self, tag: impl Into<String>, new_relative_group: u16) {
         self.playing = true;
         self.tag = Some(tag.into());
         self.new_relative_group = new_relative_group;
@@ -579,11 +551,9 @@ pub fn update_aseprite_animation(
             .flatten();
 
         let range = match animation.tag.as_ref() {
-            Some(tag) => tag_meta
-                .map(|meta| meta.range.clone())
-                .context(format!(
-                    "Animation tag \"{tag}\" not found in aseprite file",
-                ))?,
+            Some(tag) => tag_meta.map(|meta| meta.range.clone()).context(format!(
+                "Animation tag \"{tag}\" not found in aseprite file",
+            ))?,
             None => 0..=(aseprite.frame_durations.len() as u16 - 1),
         };
 
@@ -649,11 +619,14 @@ pub fn update_aseprite_animation(
             continue;
         }
 
-        state.elapsed +=
-            std::time::Duration::from_secs_f32(time.delta_secs() * animation.speed);
+        state.elapsed += std::time::Duration::from_secs_f32(time.delta_secs() * animation.speed);
 
         // frame_durations is indexed by absolute frame.
-        let absolute_frame = if has_tag { range.start() + frame.0 } else { frame.0 };
+        let absolute_frame = if has_tag {
+            range.start() + frame.0
+        } else {
+            frame.0
+        };
         let Some(frame_duration) = aseprite.frame_durations.get(usize::from(absolute_frame)) else {
             return Ok(());
         };
@@ -686,8 +659,7 @@ fn next_frame(
     )>,
     aseprites: Res<Assets<Aseprite>>,
 ) {
-    let Ok((mut state, mut frame, mut anim, has_tag, tex, layer)) =
-        animations.get_mut(trigger.0)
+    let Ok((mut state, mut frame, mut anim, has_tag, tex, layer)) = animations.get_mut(trigger.0)
     else {
         return;
     };
@@ -699,12 +671,7 @@ fn next_frame(
         return;
     };
 
-    let (abs_range, direction) = match anim
-        .tag
-        .as_ref()
-        .map(|t| aseprite.tags.get(t))
-        .flatten()
-    {
+    let (abs_range, direction) = match anim.tag.as_ref().map(|t| aseprite.tags.get(t)).flatten() {
         Some(meta) => {
             let dir = anim
                 .direction
@@ -919,7 +886,9 @@ mod tests {
     }
 
     fn last_frame(app: &App, entity: Entity) -> Option<u16> {
-        app.world().get::<CapturedFrame>(entity).and_then(|c| c.last)
+        app.world()
+            .get::<CapturedFrame>(entity)
+            .and_then(|c| c.last)
     }
 
     // ---------- Require-component wiring ----------

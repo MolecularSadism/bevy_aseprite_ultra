@@ -8,6 +8,7 @@
 mod support;
 
 use bevy::prelude::*;
+use bevy::sprite::{BorderRect, SliceScaleMode, TextureSlicer};
 use bevy::ui::widget::NodeImageMode;
 use bevy_aseprite_ultra::prelude::*;
 use support::{Cel, Fixture, Layer, Slice, SliceKey};
@@ -99,6 +100,20 @@ fn annotated() -> Fixture {
     fixture
 }
 
+/// The border the fixture's authored centre works out to.
+fn expected_border() -> BorderRect {
+    nine_patch_to_slicer(
+        Vec4::new(
+            CENTRE.0 as f32,
+            CENTRE.1 as f32,
+            CENTRE.2 as f32,
+            CENTRE.3 as f32,
+        ),
+        Vec2::splat(8.0),
+    )
+    .border
+}
+
 #[test]
 fn a_default_image_mode_takes_the_authored_nine_patch() {
     let (mut app, handles) = support::load_with(
@@ -137,10 +152,11 @@ fn a_default_image_mode_takes_the_authored_nine_patch() {
     assert_eq!(slicer.border, expected.border);
 }
 
+/// A call site cannot narrow or widen the border: the centre is the art's.
 #[test]
-fn an_image_mode_the_caller_set_survives_the_authored_nine_patch() {
+fn the_authored_centre_overrides_a_border_the_caller_set() {
     let (mut app, handles) = support::load_with(
-        "nine_patch_explicit_mode",
+        "nine_patch_caller_border",
         &annotated(),
         &[""],
         AsepriteUltraPlugin,
@@ -149,7 +165,10 @@ fn an_image_mode_the_caller_set_survives_the_authored_nine_patch() {
         .world_mut()
         .spawn((
             ImageNode {
-                image_mode: NodeImageMode::Stretch,
+                image_mode: NodeImageMode::Sliced(TextureSlicer {
+                    border: BorderRect::all(1.0),
+                    ..default()
+                }),
                 ..default()
             },
             AseSlice::new(handles[0].clone(), "Panel"),
@@ -157,11 +176,65 @@ fn an_image_mode_the_caller_set_survives_the_authored_nine_patch() {
         .id();
     app.update();
 
-    assert!(
-        matches!(
-            app.world().get::<ImageNode>(node).unwrap().image_mode,
-            NodeImageMode::Stretch
-        ),
-        "the call site's own image mode outranks the centre the artist authored",
+    let NodeImageMode::Sliced(slicer) = app
+        .world()
+        .get::<ImageNode>(node)
+        .unwrap()
+        .image_mode
+        .clone()
+    else {
+        panic!("a slice with a centre nine-slices whatever draws it");
+    };
+    assert_eq!(
+        slicer.border,
+        expected_border(),
+        "the art's centre is the border"
     );
+}
+
+/// Aseprite has no way to say "tile the middle", so that part of the slicer
+/// stays a call-site decision and has to survive.
+#[test]
+fn a_callers_scale_mode_survives_the_authored_centre() {
+    let (mut app, handles) = support::load_with(
+        "nine_patch_caller_scale",
+        &annotated(),
+        &[""],
+        AsepriteUltraPlugin,
+    );
+    let tile = SliceScaleMode::Tile { stretch_value: 1.0 };
+    let node = app
+        .world_mut()
+        .spawn((
+            ImageNode {
+                image_mode: NodeImageMode::Sliced(TextureSlicer {
+                    center_scale_mode: tile,
+                    sides_scale_mode: tile,
+                    max_corner_scale: 2.0,
+                    ..default()
+                }),
+                ..default()
+            },
+            AseSlice::new(handles[0].clone(), "Panel"),
+        ))
+        .id();
+    app.update();
+
+    let NodeImageMode::Sliced(slicer) = app
+        .world()
+        .get::<ImageNode>(node)
+        .unwrap()
+        .image_mode
+        .clone()
+    else {
+        panic!("a slice with a centre nine-slices whatever draws it");
+    };
+    assert_eq!(
+        slicer.border,
+        expected_border(),
+        "the art still owns the border"
+    );
+    assert_eq!(slicer.center_scale_mode, tile);
+    assert_eq!(slicer.sides_scale_mode, tile);
+    assert_eq!(slicer.max_corner_scale, 2.0);
 }
