@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 use bevy::{
+    app::Plugins,
     asset::{AssetPlugin, LoadState},
     image::Image,
     prelude::*,
@@ -203,6 +204,18 @@ pub fn build(fixture: &Fixture) -> Vec<u8> {
 /// labels off it, returning the app and one handle per label. An empty label
 /// loads the unlabelled composite.
 pub fn load(name: &str, fixture: &Fixture, labels: &[&str]) -> (App, Vec<Handle<Aseprite>>) {
+    load_with(name, fixture, labels, AsepriteLoaderPlugin)
+}
+
+/// [`load`], with the aseprite plugins the test needs in place of the bare
+/// loader — `AsepriteUltraPlugin` when the test drives components rather than
+/// reading asset data.
+pub fn load_with<P: Plugins<M>, M>(
+    name: &str,
+    fixture: &Fixture,
+    labels: &[&str],
+    plugins: P,
+) -> (App, Vec<Handle<Aseprite>>) {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
     std::fs::create_dir_all(&dir).expect("scratch asset dir");
     let file = format!("{name}.aseprite");
@@ -215,8 +228,8 @@ pub fn load(name: &str, fixture: &Fixture, labels: &[&str]) -> (App, Vec<Handle<
             file_path: dir.to_string_lossy().into_owned(),
             ..default()
         },
-        AsepriteLoaderPlugin,
     ));
+    app.add_plugins(plugins);
     app.init_asset::<Image>();
     app.init_asset::<TextureAtlasLayout>();
 

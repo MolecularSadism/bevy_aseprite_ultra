@@ -3,6 +3,7 @@
 - **group layers render their contents**: selecting a group by id draws every layer beneath it, where before it drew nothing (groups hold no cels of their own).
 - **layer ids address one layer each**: a name repeated across groups — two colour groups each holding a `Main` — is qualified with its group path (`Blue/Main`). Unique names are unchanged, as are the sub-asset labels derived from them.
 - `AsepriteLoaderSettings::visible_layers` accepts group names, and resolves each entry against the same ids.
+- **render layers reach the children**: an `AseTexture` renders through child entities, which until now fell to the default layer — a camera filtering to the parent's layer drew nothing, and cameras it was excluded from drew it anyway. Children now mirror the parent's `RenderLayers`, at spawn and on every change.
 - **empty nine-patch centres read as unset**: Aseprite writes a centre on every key of a nine-patch slice, so a key added before the centre was dragged out carried a zero-area one and sliced into nothing. Such a key now defers to the first key that sets a real centre, and a slice with no real centre anywhere is not a nine-patch.
 
 ## 0.9.0

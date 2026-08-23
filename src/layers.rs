@@ -1,6 +1,7 @@
 use crate::animation::{AnimationLayer, AseFrame};
 use crate::loader::Aseprite;
 use crate::slice::{nine_patch_to_slicer, AseSlice};
+use bevy::camera::visibility::RenderLayers;
 use bevy::image::TextureAtlas;
 use bevy::prelude::*;
 use bevy::sprite::TextureSlicer;
@@ -31,6 +32,14 @@ impl Plugin for AsepriteLayersPlugin {
                 propagate_flip,
                 propagate_offset,
             ),
+        );
+        // After every path that can spawn children — the asset-load system
+        // above and the add observer alike — and before visibility is
+        // resolved, so a child never renders a frame on the wrong layer.
+        app.add_systems(
+            PostUpdate,
+            propagate_render_layers
+                .before(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
         );
     }
 }
@@ -544,6 +553,26 @@ fn propagate_offset(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Mirrors an [`AseTexture`] parent's render layers onto the children it draws
+/// through.
+///
+/// The parent renders nothing itself, so without this its children fall to the
+/// default layer — a camera filtering to some other layer would draw nothing at
+/// all, while the layers the parent was excluded from would draw it anyway.
+fn propagate_render_layers(
+    mut cmd: Commands,
+    parents: Query<
+        (&RenderLayers, &SpriteLayers),
+        Or<(Changed<RenderLayers>, Changed<SpriteLayers>)>,
+    >,
+) {
+    for (layers, children) in &parents {
+        for &child in children.0.iter() {
+            cmd.entity(child).insert(layers.clone());
         }
     }
 }
