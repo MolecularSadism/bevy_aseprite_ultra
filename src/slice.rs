@@ -1,4 +1,4 @@
-use crate::animation::{resolve_frame, AseFrame, AseTag};
+use crate::animation::{AseFrame, AseTag, resolve_frame};
 use crate::layers::SpriteLayerOf;
 use crate::loader::{Aseprite, SliceMeta};
 use bevy::{
@@ -6,7 +6,7 @@ use bevy::{
     prelude::*,
     sprite::{Anchor, BorderRect, TextureSlicer},
     sprite_render::Material2d,
-    ui::{widget::NodeImageMode, UiSystems},
+    ui::{UiSystems, widget::NodeImageMode},
 };
 
 /// Convert aseprite 9-patch data to a Bevy [`TextureSlicer`].
@@ -84,11 +84,14 @@ impl RenderSlice for ImageNode {
             layout: aseprite.atlas_layout.clone(),
             index: slice_meta.atlas_id,
         });
-        if let Some(np) = slice_meta.nine_patch {
-            self.image_mode = NodeImageMode::Sliced(nine_patch_to_slicer(
-                np,
-                slice_meta.rect.size(),
-            ));
+        // The nine-patch the artist authored is the default treatment; a mode
+        // the caller set themselves wins, so a slice can be tiled, stretched,
+        // or sliced on borders of the call site's choosing.
+        if matches!(self.image_mode, NodeImageMode::Auto)
+            && let Some(np) = slice_meta.nine_patch
+        {
+            self.image_mode =
+                NodeImageMode::Sliced(nine_patch_to_slicer(np, slice_meta.rect.size()));
         }
     }
 }
@@ -101,11 +104,11 @@ impl RenderSlice for Sprite {
             layout: aseprite.atlas_layout.clone(),
             index: slice_meta.atlas_id,
         });
-        if let Some(np) = slice_meta.nine_patch {
-            self.image_mode = SpriteImageMode::Sliced(nine_patch_to_slicer(
-                np,
-                slice_meta.rect.size(),
-            ));
+        if matches!(self.image_mode, SpriteImageMode::Auto)
+            && let Some(np) = slice_meta.nine_patch
+        {
+            self.image_mode =
+                SpriteImageMode::Sliced(nine_patch_to_slicer(np, slice_meta.rect.size()));
         }
     }
 }

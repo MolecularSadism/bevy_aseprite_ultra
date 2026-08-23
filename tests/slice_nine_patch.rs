@@ -8,6 +8,7 @@
 mod support;
 
 use bevy::prelude::*;
+use bevy::ui::widget::NodeImageMode;
 use bevy_aseprite_ultra::prelude::*;
 use support::{Cel, Fixture, Layer, Slice, SliceKey};
 
@@ -88,5 +89,79 @@ fn a_slice_with_no_centre_anywhere_has_no_nine_patch() {
     assert_eq!(
         slice.nine_patch, None,
         "a slice nobody gave a centre is not a nine-patch",
+    );
+}
+
+/// One 8x8 slice with a centre, on a single frame.
+fn annotated() -> Fixture {
+    let mut fixture = partly_annotated();
+    fixture.slices[0].keys[0].centre = Some(CENTRE);
+    fixture
+}
+
+#[test]
+fn a_default_image_mode_takes_the_authored_nine_patch() {
+    let (mut app, handles) = support::load_with(
+        "nine_patch_default_mode",
+        &annotated(),
+        &[""],
+        AsepriteUltraPlugin,
+    );
+    let node = app
+        .world_mut()
+        .spawn((
+            ImageNode::default(),
+            AseSlice::new(handles[0].clone(), "Panel"),
+        ))
+        .id();
+    app.update();
+
+    let expected = nine_patch_to_slicer(
+        Vec4::new(
+            CENTRE.0 as f32,
+            CENTRE.1 as f32,
+            CENTRE.2 as f32,
+            CENTRE.3 as f32,
+        ),
+        Vec2::splat(8.0),
+    );
+    let NodeImageMode::Sliced(slicer) = app
+        .world()
+        .get::<ImageNode>(node)
+        .unwrap()
+        .image_mode
+        .clone()
+    else {
+        panic!("a slice with a centre nine-slices a node that asked for no mode of its own");
+    };
+    assert_eq!(slicer.border, expected.border);
+}
+
+#[test]
+fn an_image_mode_the_caller_set_survives_the_authored_nine_patch() {
+    let (mut app, handles) = support::load_with(
+        "nine_patch_explicit_mode",
+        &annotated(),
+        &[""],
+        AsepriteUltraPlugin,
+    );
+    let node = app
+        .world_mut()
+        .spawn((
+            ImageNode {
+                image_mode: NodeImageMode::Stretch,
+                ..default()
+            },
+            AseSlice::new(handles[0].clone(), "Panel"),
+        ))
+        .id();
+    app.update();
+
+    assert!(
+        matches!(
+            app.world().get::<ImageNode>(node).unwrap().image_mode,
+            NodeImageMode::Stretch
+        ),
+        "the call site's own image mode outranks the centre the artist authored",
     );
 }
