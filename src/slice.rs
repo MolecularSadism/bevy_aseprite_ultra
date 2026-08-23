@@ -1,4 +1,4 @@
-use crate::animation::{resolve_frame, AseFrame, AseTag};
+use crate::animation::{AseFrame, AseTag, resolve_frame};
 use crate::layers::SpriteLayerOf;
 use crate::loader::{Aseprite, SliceMeta};
 use bevy::{
@@ -6,7 +6,7 @@ use bevy::{
     prelude::*,
     sprite::{Anchor, BorderRect, TextureSlicer},
     sprite_render::Material2d,
-    ui::{widget::NodeImageMode, UiSystems},
+    ui::{UiSystems, widget::NodeImageMode},
 };
 
 /// Convert aseprite 9-patch data to a Bevy [`TextureSlicer`].
@@ -85,10 +85,8 @@ impl RenderSlice for ImageNode {
             index: slice_meta.atlas_id,
         });
         if let Some(np) = slice_meta.nine_patch {
-            self.image_mode = NodeImageMode::Sliced(nine_patch_to_slicer(
-                np,
-                slice_meta.rect.size(),
-            ));
+            self.image_mode =
+                NodeImageMode::Sliced(nine_patch_to_slicer(np, slice_meta.rect.size()));
         }
     }
 }
@@ -102,10 +100,8 @@ impl RenderSlice for Sprite {
             index: slice_meta.atlas_id,
         });
         if let Some(np) = slice_meta.nine_patch {
-            self.image_mode = SpriteImageMode::Sliced(nine_patch_to_slicer(
-                np,
-                slice_meta.rect.size(),
-            ));
+            self.image_mode =
+                SpriteImageMode::Sliced(nine_patch_to_slicer(np, slice_meta.rect.size()));
         }
     }
 }

@@ -10,7 +10,7 @@ use bevy::{
     prelude::*,
     sprite::Sprite,
     sprite_render::Material2d,
-    ui::{widget::ImageNode, UiSystems},
+    ui::{UiSystems, widget::ImageNode},
 };
 use std::{collections::VecDeque, time::Duration};
 
@@ -18,7 +18,12 @@ pub struct AsepriteAnimationPlugin;
 impl Plugin for AsepriteAnimationPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<AnimationEvents>();
+        app.add_message::<AnimationFrameChanged>();
         app.add_systems(PreUpdate, update_aseprite_animation);
+        app.add_systems(
+            PreUpdate,
+            emit_animation_frame_changed.after(update_aseprite_animation),
+        );
 
         app.add_systems(
             PostUpdate,
@@ -31,6 +36,7 @@ impl Plugin for AsepriteAnimationPlugin {
 
         app.register_type::<AseAnimation>();
         app.register_type::<AnimationState>();
+        app.register_type::<AnimationFrameCursor>();
         app.register_type::<AseFrame>();
         app.register_type::<AseTag>();
         app.register_type::<PlayDirection>();
@@ -48,12 +54,7 @@ impl Plugin for AsepriteAnimationPlugin {
 pub trait RenderAnimation {
     /// An extra system parameter used in rendering. Use a tuple if many are required.
     type Extra<'e>;
-    fn render_animation(
-        &mut self,
-        aseprite: &Aseprite,
-        frame: u16,
-        extra: &mut Self::Extra<'_>,
-    );
+    fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, extra: &mut Self::Extra<'_>);
 }
 
 impl RenderAnimation for ImageNode {
@@ -80,12 +81,7 @@ impl RenderAnimation for Sprite {
 
 impl<M: Material2d + RenderAnimation> RenderAnimation for MeshMaterial2d<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderAnimation>::Extra<'e>);
-    fn render_animation(
-        &mut self,
-        aseprite: &Aseprite,
-        frame: u16,
-        extra: &mut Self::Extra<'_>,
-    ) {
+    fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, extra: &mut Self::Extra<'_>) {
         let Some(material) = extra.0.get_mut(&*self) else {
             return;
         };
@@ -95,12 +91,7 @@ impl<M: Material2d + RenderAnimation> RenderAnimation for MeshMaterial2d<M> {
 
 impl<M: UiMaterial + RenderAnimation> RenderAnimation for MaterialNode<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderAnimation>::Extra<'e>);
-    fn render_animation(
-        &mut self,
-        aseprite: &Aseprite,
-        frame: u16,
-        extra: &mut Self::Extra<'_>,
-    ) {
+    fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, extra: &mut Self::Extra<'_>) {
         let Some(material) = extra.0.get_mut(&*self) else {
             return;
         };
@@ -111,12 +102,7 @@ impl<M: UiMaterial + RenderAnimation> RenderAnimation for MaterialNode<M> {
 #[cfg(feature = "3d")]
 impl<M: Material + RenderAnimation> RenderAnimation for MeshMaterial3d<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderAnimation>::Extra<'e>);
-    fn render_animation(
-        &mut self,
-        aseprite: &Aseprite,
-        frame: u16,
-        extra: &mut Self::Extra<'_>,
-    ) {
+    fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, extra: &mut Self::Extra<'_>) {
         let Some(material) = extra.0.get_mut(&*self) else {
             return;
         };
@@ -320,11 +306,7 @@ impl AseAnimation {
 
     /// Chains an animation after the current one is done. Pass `None` for
     /// repeat to use the file's tag repeat, or `Some(repeat)` to override.
-    pub fn with_then(
-        mut self,
-        tag: impl Into<String>,
-        repeat: Option<AnimationRepeat>,
-    ) -> Self {
+    pub fn with_then(mut self, tag: impl Into<String>, repeat: Option<AnimationRepeat>) -> Self {
         self.queue.push_back((tag.into(), repeat));
         self
     }
@@ -352,11 +334,7 @@ impl AseAnimation {
     /// Instantly starts playing a new animation starting with same relative frame
     /// only if the new relative group is the same as the previous one.
     /// Uses the file's tag repeat count.
-    pub fn play_with_relative_group(
-        &mut self,
-        tag: impl Into<String>,
-        new_relative_group: u16,
-    ) {
+    pub fn play_with_relative_group(&mut self, tag: impl Into<String>, new_relative_group: u16) {
         self.playing = true;
         self.tag = Some(tag.into());
         self.new_relative_group = new_relative_group;
@@ -488,6 +466,110 @@ pub enum AnimationEvents {
     LoopCycleFinished(Entity),
 }
 
+/// Emitted whenever an entity's displayed animation frame changes; `frame` is
+/// the tag-relative frame now showing.
+///
+/// [`AnimationEvents`] only signals completions; this message gives per-frame
+/// granularity (footstep frames, attack cast points). It fires on every change
+/// of [`AnimationState::relative_frame`] — a forward step, a wrap to 0 (loop or
+/// clip restart), or a multi-frame jump — carrying the frame now showing.
+///
+/// Match with `frame >= N` rather than `frame == N`: a slow tick can advance a
+/// clip past `N` in a single message.
+///
+/// Across a tag change the frame counter can still hold the previous tag's
+/// value for a tick. The emitter therefore accepts only a clean `0` on a tag
+/// change; a stale leftover is suppressed and later reported as an ordinary
+/// change — so a stale frame never counts as progress in the new tag.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct AnimationFrameChanged {
+    pub entity: Entity,
+    pub frame: u16,
+}
+
+/// The emitter's per-entity bookkeeping: the last frame seen and the tag it
+/// belonged to.
+///
+/// Purely internal to [`emit_animation_frame_changed`] — consumers react to
+/// [`AnimationFrameChanged`] rather than querying this (public only so the
+/// emitter system's signature is nameable, like the other internals). Keying
+/// the tag off [`AseAnimation::tag`] (rather than Bevy change detection) means
+/// unrelated writes to the component never spuriously reset it.
+#[derive(Component, Reflect, Debug, Default)]
+#[reflect(Component)]
+pub struct AnimationFrameCursor {
+    /// The frame observed on the previous tick, used to detect any change.
+    last_frame: u16,
+    /// The tag `last_frame` belongs to; a change means a new clip.
+    last_tag: Option<String>,
+}
+
+impl AnimationFrameCursor {
+    fn new(frame: u16, tag: Option<&str>) -> Self {
+        Self {
+            last_frame: frame,
+            last_tag: tag.map(str::to_owned),
+        }
+    }
+
+    /// Folds one tick's observation into the cursor, returning the frame to
+    /// emit when the displayed frame changed.
+    ///
+    /// Within a tag, any change (a forward step or a wrap toward 0) is
+    /// reported. Across a tag change the frame counter may still show the
+    /// previous tag's frame for a tick, so only a clean `0` is trusted; a
+    /// stale leftover is reported later, once the counter changes again.
+    fn advance(&mut self, current: u16, tag: Option<&str>) -> Option<u16> {
+        let tag_changed = self.last_tag.as_deref() != tag;
+
+        if tag_changed {
+            self.last_tag = tag.map(str::to_owned);
+            self.last_frame = current;
+            return (current == 0).then_some(0);
+        }
+
+        if current != self.last_frame {
+            self.last_frame = current;
+            return Some(current);
+        }
+
+        None
+    }
+}
+
+/// Maintains each animated entity's [`AnimationFrameCursor`] and emits
+/// [`AnimationFrameChanged`] whenever the displayed frame changes.
+///
+/// A cursor is inserted lazily on first sight. Within a tag every change is
+/// reported; across a tag change only a clean start at 0 is reported (a stale
+/// leftover frame is suppressed until it changes again), so a leftover frame
+/// never counts as progress in the new tag.
+pub fn emit_animation_frame_changed(
+    mut cmd: Commands,
+    mut writer: MessageWriter<AnimationFrameChanged>,
+    mut q: Query<(
+        Entity,
+        &AnimationState,
+        &AseAnimation,
+        Option<&mut AnimationFrameCursor>,
+    )>,
+) {
+    for (entity, state, animation, cursor) in &mut q {
+        let current = state.relative_frame;
+        let tag = animation.tag.as_deref();
+
+        let Some(mut cursor) = cursor else {
+            cmd.entity(entity)
+                .insert(AnimationFrameCursor::new(current, tag));
+            continue;
+        };
+
+        if let Some(frame) = cursor.advance(current, tag) {
+            writer.write(AnimationFrameChanged { entity, frame });
+        }
+    }
+}
+
 /// Playback direction for an animation.
 #[derive(Default, Clone, Reflect, Debug)]
 #[reflect]
@@ -579,11 +661,9 @@ pub fn update_aseprite_animation(
             .flatten();
 
         let range = match animation.tag.as_ref() {
-            Some(tag) => tag_meta
-                .map(|meta| meta.range.clone())
-                .context(format!(
-                    "Animation tag \"{tag}\" not found in aseprite file",
-                ))?,
+            Some(tag) => tag_meta.map(|meta| meta.range.clone()).context(format!(
+                "Animation tag \"{tag}\" not found in aseprite file",
+            ))?,
             None => 0..=(aseprite.frame_durations.len() as u16 - 1),
         };
 
@@ -649,11 +729,14 @@ pub fn update_aseprite_animation(
             continue;
         }
 
-        state.elapsed +=
-            std::time::Duration::from_secs_f32(time.delta_secs() * animation.speed);
+        state.elapsed += std::time::Duration::from_secs_f32(time.delta_secs() * animation.speed);
 
         // frame_durations is indexed by absolute frame.
-        let absolute_frame = if has_tag { range.start() + frame.0 } else { frame.0 };
+        let absolute_frame = if has_tag {
+            range.start() + frame.0
+        } else {
+            frame.0
+        };
         let Some(frame_duration) = aseprite.frame_durations.get(usize::from(absolute_frame)) else {
             return Ok(());
         };
@@ -686,8 +769,7 @@ fn next_frame(
     )>,
     aseprites: Res<Assets<Aseprite>>,
 ) {
-    let Ok((mut state, mut frame, mut anim, has_tag, tex, layer)) =
-        animations.get_mut(trigger.0)
+    let Ok((mut state, mut frame, mut anim, has_tag, tex, layer)) = animations.get_mut(trigger.0)
     else {
         return;
     };
@@ -699,12 +781,7 @@ fn next_frame(
         return;
     };
 
-    let (abs_range, direction) = match anim
-        .tag
-        .as_ref()
-        .map(|t| aseprite.tags.get(t))
-        .flatten()
-    {
+    let (abs_range, direction) = match anim.tag.as_ref().map(|t| aseprite.tags.get(t)).flatten() {
         Some(meta) => {
             let dir = anim
                 .direction
@@ -919,7 +996,9 @@ mod tests {
     }
 
     fn last_frame(app: &App, entity: Entity) -> Option<u16> {
-        app.world().get::<CapturedFrame>(entity).and_then(|c| c.last)
+        app.world()
+            .get::<CapturedFrame>(entity)
+            .and_then(|c| c.last)
     }
 
     // ---------- Require-component wiring ----------
@@ -1151,6 +1230,160 @@ mod tests {
         app.update();
         // Rock starts at 2, offset 0 -> absolute frame 2.
         assert_eq!(last_frame(&app, child), Some(2));
+    }
+
+    // ---------- AnimationFrameChanged ----------
+
+    /// A forward step within one tag reports the new frame.
+    #[test]
+    fn frame_change_forward_progress_reports_frame() {
+        let mut cursor = AnimationFrameCursor::new(0, Some("attack"));
+
+        assert_eq!(cursor.advance(1, Some("attack")), Some(1));
+        assert_eq!(cursor.advance(2, Some("attack")), Some(2));
+    }
+
+    /// Staying on the same frame reports nothing.
+    #[test]
+    fn frame_change_same_frame_reports_nothing() {
+        let mut cursor = AnimationFrameCursor::new(4, Some("attack"));
+        assert_eq!(cursor.advance(4, Some("attack")), None);
+    }
+
+    /// A tick that jumps several frames reports the frame now showing, so a
+    /// consumer keyed inside the jump still sees `frame >= target` and cannot
+    /// be skipped.
+    #[test]
+    fn frame_change_jump_reports_new_frame() {
+        let mut cursor = AnimationFrameCursor::new(6, Some("attack"));
+        // A hitch advances the clip 6 -> 13 in one tick; frame 11 sat inside the jump.
+        assert_eq!(cursor.advance(13, Some("attack")), Some(13));
+    }
+
+    /// A wrap back to 0 within the same tag (a loop's last-frame-to-0) is a
+    /// real change and is reported.
+    #[test]
+    fn frame_change_wrap_to_zero_is_reported() {
+        let mut cursor = AnimationFrameCursor::new(15, Some("attack"));
+        assert_eq!(cursor.advance(0, Some("attack")), Some(0));
+    }
+
+    /// Entering a new tag cleanly at frame 0 is reported.
+    #[test]
+    fn frame_change_tag_entry_at_zero_is_reported() {
+        let mut cursor = AnimationFrameCursor::new(15, Some("attack"));
+        assert_eq!(cursor.advance(0, Some("windup")), Some(0));
+        // The untagged full-clip case counts as its own "tag" too.
+        let mut cursor = AnimationFrameCursor::new(3, Some("attack"));
+        assert_eq!(cursor.advance(0, None), Some(0));
+    }
+
+    /// A tag change whose frame counter has not reset yet is suppressed (the
+    /// stale tick), then the real reset to 0 is reported and progress accrues
+    /// normally.
+    #[test]
+    fn frame_change_stale_tag_change_is_suppressed_until_reset() {
+        let mut cursor = AnimationFrameCursor::new(2, Some("idle"));
+        // Tag has flipped to attack but the counter still shows a leftover frame: suppressed.
+        assert_eq!(cursor.advance(9, Some("attack")), None);
+        // A frozen leftover across another tick still reports nothing.
+        assert_eq!(cursor.advance(9, Some("attack")), None);
+        // The counter finally resets to 0: reported as a normal change.
+        assert_eq!(cursor.advance(0, Some("attack")), Some(0));
+        assert_eq!(cursor.advance(7, Some("attack")), Some(7));
+    }
+
+    /// End-to-end through the emitter system: cursor is inserted lazily, frame
+    /// advances are reported, and a tag switch suppresses the stale frame.
+    #[test]
+    fn frame_change_system_emits_and_rejects_stale() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<AnimationFrameChanged>();
+        app.add_systems(Update, emit_animation_frame_changed);
+
+        let entity = app
+            .world_mut()
+            .spawn((AseAnimation::tag("walk"), AnimationState::default()))
+            .id();
+
+        let drain = |app: &mut App| -> Vec<u16> {
+            app.world_mut()
+                .resource_mut::<Messages<AnimationFrameChanged>>()
+                .drain()
+                .map(|m| {
+                    assert_eq!(m.entity, entity);
+                    m.frame
+                })
+                .collect()
+        };
+
+        // First sight only inserts the cursor.
+        app.update();
+        assert_eq!(drain(&mut app), Vec::<u16>::new());
+
+        // A forward step is reported.
+        app.world_mut()
+            .get_mut::<AnimationState>(entity)
+            .unwrap()
+            .relative_frame = 1;
+        app.update();
+        assert_eq!(drain(&mut app), vec![1]);
+
+        // Tag switch with a stale leftover frame: suppressed.
+        app.world_mut()
+            .get_mut::<AseAnimation>(entity)
+            .unwrap()
+            .play("attack");
+        app.world_mut()
+            .get_mut::<AnimationState>(entity)
+            .unwrap()
+            .relative_frame = 5;
+        app.update();
+        assert_eq!(drain(&mut app), Vec::<u16>::new());
+
+        // The counter resets to 0: reported, and progress accrues again.
+        app.world_mut()
+            .get_mut::<AnimationState>(entity)
+            .unwrap()
+            .relative_frame = 0;
+        app.update();
+        assert_eq!(drain(&mut app), vec![0]);
+        app.world_mut()
+            .get_mut::<AnimationState>(entity)
+            .unwrap()
+            .relative_frame = 1;
+        app.update();
+        assert_eq!(drain(&mut app), vec![1]);
+    }
+
+    /// A tag switch that lands cleanly on 0 is reported immediately.
+    #[test]
+    fn frame_change_system_reports_clean_tag_entry() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<AnimationFrameChanged>();
+        app.add_systems(Update, emit_animation_frame_changed);
+
+        let entity = app
+            .world_mut()
+            .spawn((AseAnimation::tag("walk"), AnimationState::default()))
+            .id();
+        app.update(); // insert cursor
+
+        app.world_mut()
+            .get_mut::<AseAnimation>(entity)
+            .unwrap()
+            .play("attack");
+        app.update();
+
+        let frames: Vec<u16> = app
+            .world_mut()
+            .resource_mut::<Messages<AnimationFrameChanged>>()
+            .drain()
+            .map(|m| m.frame)
+            .collect();
+        assert_eq!(frames, vec![0]);
     }
 
     /// A child's own AseTag overrides the parent's.
