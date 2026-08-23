@@ -1,7 +1,7 @@
 use crate::error::AsepriteError;
 use crate::layers::{LayerEntry, LayerId};
 use aseprite_loader::{
-    binary::chunks::tags::AnimationDirection,
+    binary::chunks::{layer::LayerType, tags::AnimationDirection},
     loader::{AsepriteFile, LayerSelection},
 };
 use bevy::{
@@ -193,6 +193,107 @@ impl From<&SliceMeta> for Anchor {
     }
 }
 
+/// One layer of a file, resolved against the group tree it sits in.
+struct ResolvedLayer {
+    /// Id addressing exactly this layer.
+    id: LayerId,
+    /// Whether the layer is visible in the source file.
+    visible: bool,
+    /// Which layers this entry draws: itself, or — for a group, which holds no
+    /// cels of its own — every drawable layer beneath it.
+    selection: LayerSelection,
+}
+
+/// Resolves a file's layers into ids and render selections.
+///
+/// Two things make the flat name list Aseprite exports unusable as an index.
+/// Names are unique only within a group, so several colour groups may each
+/// hold a child called `Main`; and a group is a container, so rendering one by
+/// name yields an empty image. Duplicated names are therefore qualified with
+/// their group path, and a group's selection covers its whole subtree.
+///
+/// The returned order matches [`AsepriteFile::layers`].
+fn resolve_layers(raw: &AsepriteFile) -> Vec<ResolvedLayer> {
+    // `AsepriteFile::layers` keeps normal and group chunks, in file order, so
+    // the same filter over the raw chunks lines the two lists up index for index.
+    let chunks: Vec<_> = raw
+        .file
+        .layers
+        .iter()
+        .filter(|chunk| matches!(chunk.layer_type, LayerType::Normal | LayerType::Group))
+        .collect();
+    let layers = raw.layers();
+
+    // Ancestor chain, rebuilt as the walk descends: a layer at child level `n`
+    // hangs under the last layer seen at level `n - 1`.
+    let mut ancestry: Vec<Vec<usize>> = Vec::with_capacity(layers.len());
+    let mut open_groups: Vec<usize> = Vec::new();
+    for (index, chunk) in chunks.iter().enumerate() {
+        open_groups.truncate(usize::from(chunk.child_level));
+        ancestry.push(open_groups.clone());
+        if chunk.layer_type == LayerType::Group {
+            open_groups.push(index);
+        }
+    }
+
+    let path_of = |index: usize| -> String {
+        ancestry[index]
+            .iter()
+            .chain(std::iter::once(&index))
+            .map(|&i| layers[i].name.as_str())
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+
+    layers
+        .iter()
+        .enumerate()
+        .map(|(index, layer)| {
+            let ambiguous = layers
+                .iter()
+                .enumerate()
+                .any(|(other, candidate)| other != index && candidate.name == layer.name);
+            let id = if ambiguous {
+                LayerId::new(&path_of(index))
+            } else {
+                LayerId::new(&layer.name)
+            };
+
+            // A group draws through its descendants; anything else draws itself.
+            let mask = (0..layers.len())
+                .map(|other| other == index || ancestry[other].contains(&index))
+                .collect();
+
+            ResolvedLayer {
+                id,
+                visible: layer.visible,
+                selection: LayerSelection::Mask(mask),
+            }
+        })
+        .collect()
+}
+
+/// Selection covering every layer named in `names`, groups included.
+///
+/// A name is matched against both the bare layer name and the qualified path
+/// [`resolve_layers`] falls back to, so a settings entry keeps working whether
+/// or not the name it picks turns out to be ambiguous.
+fn union_selection(layers: &[ResolvedLayer], names: &[String]) -> LayerSelection {
+    let mut mask = vec![false; layers.len()];
+    for layer in layers {
+        if !names.iter().any(|name| layer.id == LayerId::new(name)) {
+            continue;
+        }
+        let LayerSelection::Mask(selected) = &layer.selection else {
+            continue;
+        };
+        for (slot, picked) in mask.iter_mut().zip(selected) {
+            *slot |= picked;
+        }
+    }
+    LayerSelection::Mask(mask)
+}
+
 /// The [`AssetLoader`] for `.aseprite` / `.ase` files.
 ///
 /// Registered automatically by [`AsepriteLoaderPlugin`].
@@ -283,11 +384,9 @@ impl AssetLoader for AsepriteLoader {
         };
 
         // ----------------------------- composite (visible layers or custom selection)
+        let resolved_layers = resolve_layers(&raw);
         let composite_selection = match &settings.visible_layers {
-            Some(layers) => {
-                let names: Vec<&str> = layers.iter().map(|s| s.as_str()).collect();
-                raw.select_layers_by_name(&names)
-            }
+            Some(names) => union_selection(&resolved_layers, names),
             None => LayerSelection::Visible,
         };
         let composite_ids = render_frames(
@@ -309,18 +408,16 @@ impl AssetLoader for AsepriteLoader {
         let mut layer_entries: Vec<LayerEntry> = Vec::new();
         let mut per_layer_ids: Vec<(LayerId, Vec<AssetId<Image>>)> = Vec::new();
 
-        for layer in raw.layers() {
-            let layer_id = LayerId::new(&layer.name);
-            layer_entries.push(LayerEntry::new(layer_id, layer.visible));
+        for layer in resolved_layers {
+            layer_entries.push(LayerEntry::new(layer.id, layer.visible));
 
-            let selection = raw.select_layers_by_name(&[&layer.name]);
             let ids = render_frames(
                 &raw,
-                &selection,
+                &layer.selection,
                 &settings.sampler,
                 &mut all_images,
             )?;
-            per_layer_ids.push((layer_id, ids));
+            per_layer_ids.push((layer.id, ids));
         }
 
         // Aseprite stores layers bottom-to-top; reverse so index 0 = topmost

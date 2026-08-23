@@ -1,3 +1,9 @@
+## Unreleased
+
+- **group layers render their contents**: selecting a group by id draws every layer beneath it, where before it drew nothing (groups hold no cels of their own).
+- **layer ids address one layer each**: a name repeated across groups — two colour groups each holding a `Main` — is qualified with its group path (`Blue/Main`). Unique names are unchanged, as are the sub-asset labels derived from them.
+- `AsepriteLoaderSettings::visible_layers` accepts group names, and resolves each entry against the same ids.
+
 ## 0.9.0
 
 - updated to bevy 0.18.
