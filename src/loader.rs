@@ -461,6 +461,14 @@ impl AssetLoader for AsepriteLoader {
             keys: Vec<SliceKeyMeta>,
         }
 
+        // A nine-patch centre with no area cannot divide anything, so it reads
+        // as "this key sets no centre" rather than as a degenerate slicer.
+        let nine_patch_of = |key: &aseprite_loader::binary::chunks::slice::SliceKey| {
+            key.nine_patch
+                .filter(|np| np.width > 0 && np.height > 0)
+                .map(|np| Vec4::new(np.x as f32, np.y as f32, np.width as f32, np.height as f32))
+        };
+
         let raw_slice_data: Vec<RawSlice> = raw
             .slices()
             .iter()
@@ -472,9 +480,6 @@ impl AssetLoader for AsepriteLoader {
                 let pivot = slice_key
                     .pivot
                     .map(|p| Vec2::new(p.x as f32, p.y as f32));
-                let nine_patch = slice_key.nine_patch.map(|np| {
-                    Vec4::new(np.x as f32, np.y as f32, np.width as f32, np.height as f32)
-                });
 
                 let keys: Vec<SliceKeyMeta> = slice
                     .slice_keys
@@ -489,17 +494,16 @@ impl AssetLoader for AsepriteLoader {
                             pivot: key
                                 .pivot
                                 .map(|p| Vec2::new(p.x as f32, p.y as f32)),
-                            nine_patch: key.nine_patch.map(|np| {
-                                Vec4::new(
-                                    np.x as f32,
-                                    np.y as f32,
-                                    np.width as f32,
-                                    np.height as f32,
-                                )
-                            }),
+                            nine_patch: nine_patch_of(key),
                         }
                     })
                     .collect();
+
+                // A key written before its centre was dragged out carries an
+                // empty one. Every frame of the slice falls back to the first
+                // centre that is actually a centre, so a partly-annotated
+                // timeline slices the same way from end to end.
+                let nine_patch = keys.iter().find_map(|key| key.nine_patch);
 
                 RawSlice {
                     name: slice.name.to_owned(),
