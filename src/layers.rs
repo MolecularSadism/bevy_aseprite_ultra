@@ -1,6 +1,6 @@
 use crate::animation::{AnimationLayer, AseFrame};
 use crate::loader::Aseprite;
-use crate::slice::{AseSlice, nine_patch_to_slicer};
+use crate::slice::{nine_patch_to_slicer, AseSlice};
 use bevy::image::TextureAtlas;
 use bevy::prelude::*;
 use bevy::sprite::TextureSlicer;
@@ -400,7 +400,10 @@ fn spawn_layers_on_asset_load(
 /// (different layer set detected).
 fn update_layers(
     mut cmd: Commands,
-    query: Query<(Entity, &AseTexture, &SpriteLayers, Option<&AseFlip>), Changed<AseTexture>>,
+    query: Query<
+        (Entity, &AseTexture, &SpriteLayers, Option<&AseFlip>),
+        Changed<AseTexture>,
+    >,
     layer_ids: Query<&LayerId, With<SpriteLayerOf>>,
     mut transforms: Query<&mut Transform, With<SpriteLayerOf>>,
     mut z_indices: Query<&mut ZIndex, With<SpriteLayerOf>>,
@@ -557,7 +560,10 @@ fn propagate_offset(
 ///
 /// If a slice name is requested but missing from this aseprite, falls back
 /// to frame 0 — `render_slice` will emit its own warning at runtime.
-fn initial_atlas(ase: &Aseprite, slice: Option<&SliceId>) -> (usize, Option<TextureSlicer>) {
+fn initial_atlas(
+    ase: &Aseprite,
+    slice: Option<&SliceId>,
+) -> (usize, Option<TextureSlicer>) {
     if let Some(id) = slice {
         if let Some(meta) = ase.slices.get(id.as_str()) {
             let slicer = meta
@@ -607,7 +613,11 @@ fn spawn_baked_child(
     tex: &AseTexture,
     flip: Option<&AseFlip>,
 ) {
-    let common = (ChildOf(parent), SpriteLayerOf(parent), Name::new("baked"));
+    let common = (
+        ChildOf(parent),
+        SpriteLayerOf(parent),
+        Name::new("baked"),
+    );
 
     let (index, slicer) = initial_atlas(aseprite, tex.slice.as_ref());
 
@@ -628,14 +638,8 @@ fn spawn_baked_child(
                 sprite.flip_x = flip.x;
                 sprite.flip_y = flip.y;
             }
-            let eff_x = flip.map_or(
-                tex.offset.x,
-                |f| if f.x { -tex.offset.x } else { tex.offset.x },
-            );
-            let eff_y = flip.map_or(
-                tex.offset.y,
-                |f| if f.y { -tex.offset.y } else { tex.offset.y },
-            );
+            let eff_x = flip.map_or(tex.offset.x, |f| if f.x { -tex.offset.x } else { tex.offset.x });
+            let eff_y = flip.map_or(tex.offset.y, |f| if f.y { -tex.offset.y } else { tex.offset.y });
             let offset_translation = Vec3::new(eff_x, eff_y, 0.);
             let mut entity_cmd = cmd.spawn((
                 common,
@@ -761,16 +765,8 @@ fn spawn_layered_children(
                     sprite.flip_x = flip.x;
                     sprite.flip_y = flip.y;
                 }
-                let eff_x =
-                    flip.map_or(
-                        tex.offset.x,
-                        |f| if f.x { -tex.offset.x } else { tex.offset.x },
-                    );
-                let eff_y =
-                    flip.map_or(
-                        tex.offset.y,
-                        |f| if f.y { -tex.offset.y } else { tex.offset.y },
-                    );
+                let eff_x = flip.map_or(tex.offset.x, |f| if f.x { -tex.offset.x } else { tex.offset.x });
+                let eff_y = flip.map_or(tex.offset.y, |f| if f.y { -tex.offset.y } else { tex.offset.y });
                 let translation = Vec3::new(eff_x, eff_y, z as f32 * 0.001);
                 let mut entity_cmd = cmd.spawn((
                     common,
@@ -779,8 +775,8 @@ fn spawn_layered_children(
                     AppliedOffset(tex.offset),
                     visibility,
                     AnimationLayer::new(layer_handle.clone()),
-                ));
-                if let Some(slice_id) = &tex.slice {
+                    ));
+                    if let Some(slice_id) = &tex.slice {
                     entity_cmd.insert(AseSlice {
                         name: slice_id.as_str().to_owned(),
                         aseprite: layer_handle,
@@ -819,8 +815,8 @@ fn spawn_layered_children(
                     AppliedOffset(tex.offset),
                     visibility,
                     AnimationLayer::new(layer_handle.clone()),
-                ));
-                if let Some(slice_id) = &tex.slice {
+                    ));
+                    if let Some(slice_id) = &tex.slice {
                     entity_cmd.insert(AseSlice {
                         name: slice_id.as_str().to_owned(),
                         aseprite: layer_handle,
@@ -830,6 +826,7 @@ fn spawn_layered_children(
         }
     }
 }
+
 
 #[cfg(test)]
 mod tests {

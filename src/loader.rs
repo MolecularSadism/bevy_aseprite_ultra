@@ -5,7 +5,7 @@ use aseprite_loader::{
     loader::{AsepriteFile, LayerSelection},
 };
 use bevy::{
-    asset::{AssetLoader, RenderAssetUsages, io::Reader},
+    asset::{io::Reader, AssetLoader, RenderAssetUsages},
     image::ImageSampler,
     platform::collections::HashMap,
     prelude::*,
@@ -314,7 +314,12 @@ impl AssetLoader for AsepriteLoader {
             layer_entries.push(LayerEntry::new(layer_id, layer.visible));
 
             let selection = raw.select_layers_by_name(&[&layer.name]);
-            let ids = render_frames(&raw, &selection, &settings.sampler, &mut all_images)?;
+            let ids = render_frames(
+                &raw,
+                &selection,
+                &settings.sampler,
+                &mut all_images,
+            )?;
             per_layer_ids.push((layer_id, ids));
         }
 
@@ -367,7 +372,9 @@ impl AssetLoader for AsepriteLoader {
                 let min = Vec2::new(slice_key.x as f32, slice_key.y as f32);
                 let max = min + Vec2::new(slice_key.width as f32, slice_key.height as f32);
 
-                let pivot = slice_key.pivot.map(|p| Vec2::new(p.x as f32, p.y as f32));
+                let pivot = slice_key
+                    .pivot
+                    .map(|p| Vec2::new(p.x as f32, p.y as f32));
                 let nine_patch = slice_key.nine_patch.map(|np| {
                     Vec4::new(np.x as f32, np.y as f32, np.width as f32, np.height as f32)
                 });
@@ -377,11 +384,14 @@ impl AssetLoader for AsepriteLoader {
                     .iter()
                     .map(|key| {
                         let k_min = Vec2::new(key.x as f32, key.y as f32);
-                        let k_max = k_min + Vec2::new(key.width as f32, key.height as f32);
+                        let k_max =
+                            k_min + Vec2::new(key.width as f32, key.height as f32);
                         SliceKeyMeta {
                             frame: key.frame_number as usize,
                             rect: Rect::from_corners(k_min, k_max),
-                            pivot: key.pivot.map(|p| Vec2::new(p.x as f32, p.y as f32)),
+                            pivot: key
+                                .pivot
+                                .map(|p| Vec2::new(p.x as f32, p.y as f32)),
                             nine_patch: key.nine_patch.map(|np| {
                                 Vec4::new(
                                     np.x as f32,
@@ -447,7 +457,8 @@ impl AssetLoader for AsepriteLoader {
         let composite_slices = build_slices(&composite_indicies, &mut layout);
         let all_slices = build_slices(&all_indicies, &mut layout);
 
-        let mut per_layer_data: Vec<(LayerId, Vec<usize>, HashMap<String, SliceMeta>)> = Vec::new();
+        let mut per_layer_data: Vec<(LayerId, Vec<usize>, HashMap<String, SliceMeta>)> =
+            Vec::new();
         for (layer_id, layer_indicies) in per_layer_resolved {
             let slices = build_slices(&layer_indicies, &mut layout);
             per_layer_data.push((layer_id, layer_indicies, slices));

@@ -24,7 +24,14 @@ fn main() {
         }))
         .add_plugins(AsepriteUltraPlugin)
         .add_systems(Startup, setup)
-        .add_systems(Update, (attach_per_layer_driver, handle_input, update_hint))
+        .add_systems(
+            Update,
+            (
+                attach_per_layer_driver,
+                handle_input,
+                update_hint,
+            ),
+        )
         .run();
 }
 
@@ -73,7 +80,9 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     })
     .with_children(|root| {
         root.spawn((
-            Text::new("[Space] pause/resume left   [Left]/[Right] scrub frame   [R] reset"),
+            Text::new(
+                "[Space] pause/resume left   [Left]/[Right] scrub frame   [R] reset",
+            ),
             TextFont {
                 font_size: 18.,
                 ..default()

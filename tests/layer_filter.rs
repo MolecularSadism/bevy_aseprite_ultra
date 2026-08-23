@@ -64,7 +64,10 @@ fn atlas_pixel_data(app: &App, handle: &Handle<Aseprite>) -> Vec<u8> {
 /// filter — use this instead to inspect only the composite frame cells.
 fn composite_frame_pixel_data(app: &App, handle: &Handle<Aseprite>, frame: usize) -> Vec<u8> {
     let world = app.world();
-    let ase = world.resource::<Assets<Aseprite>>().get(handle).unwrap();
+    let ase = world
+        .resource::<Assets<Aseprite>>()
+        .get(handle)
+        .unwrap();
 
     let atlas_index = ase.get_atlas_index(frame);
     let layout = world
