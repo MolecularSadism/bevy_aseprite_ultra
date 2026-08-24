@@ -13,18 +13,18 @@ pub(crate) mod processor;
 pub(crate) mod slice;
 
 pub mod prelude {
+    pub use crate::AsepriteUltraPlugin;
     pub use crate::animation::{
-        render_children_animation, resolve_frame, AnimationDirection, AnimationEvents,
-        AnimationLayer, AnimationRepeat, AnimationState, AseAnimation, AseFrame, AseTag,
-        ManualTick, NextFrameEvent, PlayDirection, RenderAnimation,
+        AnimationDirection, AnimationEvents, AnimationLayer, AnimationRepeat, AnimationState,
+        AseAnimation, AseFrame, AseTag, ManualTick, NextFrameEvent, PlayDirection, RenderAnimation,
+        render_children_animation, resolve_frame,
     };
     pub use crate::layers::{
         AseFlip, AseTexture, LayerEntry, LayerFilter, LayerId, RenderTarget, SliceId,
         SpriteLayerOf, SpriteLayers,
     };
     pub use crate::loader::{Aseprite, AsepriteLoaderPlugin, AsepriteLoaderSettings, SliceMeta};
-    pub use crate::slice::{nine_patch_to_slicer, render_slice, AseSlice, RenderSlice};
-    pub use crate::AsepriteUltraPlugin;
+    pub use crate::slice::{AseSlice, RenderSlice, nine_patch_to_slicer, render_slice};
 }
 
 /// The main plugin. Add this to your [`App`] to enable aseprite loading,

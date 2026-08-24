@@ -175,7 +175,7 @@ cmd.spawn((
         .with_repeat(AnimationRepeat::Count(3))
         .with_direction(AnimationDirection::PingPong)
         // chain animations — loop animations never finish
-        .with_then("idle", AnimationRepeat::Loop),
+        .with_then("idle", Some(AnimationRepeat::Loop)),
 ));
 # }
 ```

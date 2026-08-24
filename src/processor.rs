@@ -2,10 +2,10 @@ use std::io::Cursor;
 
 use bevy::{
     asset::{
+        AssetLoader, AsyncWriteExt,
         processor::LoadTransformAndSave,
         saver::{AssetSaver, SavedAsset},
         transformer::IdentityAssetTransformer,
-        AssetLoader, AsyncWriteExt,
     },
     image::{CompressedImageFormats, ImageFormatSetting, ImageLoaderSettings, ImageType},
     prelude::*,
