@@ -1,10 +1,6 @@
 mod helpers;
 
-use bevy::{
-    color::palettes::css,
-    image::ImageSamplerDescriptor,
-    prelude::*,
-};
+use bevy::{color::palettes::css, image::ImageSamplerDescriptor, prelude::*};
 use bevy_aseprite_ultra::prelude::*;
 use helpers::{DefaultFilter, HintText, LayerState, LayerTogglePlugin};
 

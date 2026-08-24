@@ -1,11 +1,11 @@
 use crate::error::AsepriteError;
 use crate::layers::{LayerEntry, LayerId};
 use aseprite_loader::{
-    binary::chunks::tags::AnimationDirection,
+    binary::chunks::{layer::LayerType, tags::AnimationDirection},
     loader::{AsepriteFile, LayerSelection},
 };
 use bevy::{
-    asset::{io::Reader, AssetLoader, RenderAssetUsages},
+    asset::{AssetLoader, RenderAssetUsages, io::Reader},
     image::ImageSampler,
     platform::collections::HashMap,
     prelude::*,
@@ -193,6 +193,107 @@ impl From<&SliceMeta> for Anchor {
     }
 }
 
+/// One layer of a file, resolved against the group tree it sits in.
+struct ResolvedLayer {
+    /// Id addressing exactly this layer.
+    id: LayerId,
+    /// Whether the layer is visible in the source file.
+    visible: bool,
+    /// Which layers this entry draws: itself, or — for a group, which holds no
+    /// cels of its own — every drawable layer beneath it.
+    selection: LayerSelection,
+}
+
+/// Resolves a file's layers into ids and render selections.
+///
+/// Two things make the flat name list Aseprite exports unusable as an index.
+/// Names are unique only within a group, so several colour groups may each
+/// hold a child called `Main`; and a group is a container, so rendering one by
+/// name yields an empty image. Duplicated names are therefore qualified with
+/// their group path, and a group's selection covers its whole subtree.
+///
+/// The returned order matches [`AsepriteFile::layers`].
+fn resolve_layers(raw: &AsepriteFile) -> Vec<ResolvedLayer> {
+    // `AsepriteFile::layers` keeps normal and group chunks, in file order, so
+    // the same filter over the raw chunks lines the two lists up index for index.
+    let chunks: Vec<_> = raw
+        .file
+        .layers
+        .iter()
+        .filter(|chunk| matches!(chunk.layer_type, LayerType::Normal | LayerType::Group))
+        .collect();
+    let layers = raw.layers();
+
+    // Ancestor chain, rebuilt as the walk descends: a layer at child level `n`
+    // hangs under the last layer seen at level `n - 1`.
+    let mut ancestry: Vec<Vec<usize>> = Vec::with_capacity(layers.len());
+    let mut open_groups: Vec<usize> = Vec::new();
+    for (index, chunk) in chunks.iter().enumerate() {
+        open_groups.truncate(usize::from(chunk.child_level));
+        ancestry.push(open_groups.clone());
+        if chunk.layer_type == LayerType::Group {
+            open_groups.push(index);
+        }
+    }
+
+    let path_of = |index: usize| -> String {
+        ancestry[index]
+            .iter()
+            .chain(std::iter::once(&index))
+            .map(|&i| layers[i].name.as_str())
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+
+    layers
+        .iter()
+        .enumerate()
+        .map(|(index, layer)| {
+            let ambiguous = layers
+                .iter()
+                .enumerate()
+                .any(|(other, candidate)| other != index && candidate.name == layer.name);
+            let id = if ambiguous {
+                LayerId::new(&path_of(index))
+            } else {
+                LayerId::new(&layer.name)
+            };
+
+            // A group draws through its descendants; anything else draws itself.
+            let mask = (0..layers.len())
+                .map(|other| other == index || ancestry[other].contains(&index))
+                .collect();
+
+            ResolvedLayer {
+                id,
+                visible: layer.visible,
+                selection: LayerSelection::Mask(mask),
+            }
+        })
+        .collect()
+}
+
+/// Selection covering every layer named in `names`, groups included.
+///
+/// A name is matched against both the bare layer name and the qualified path
+/// [`resolve_layers`] falls back to, so a settings entry keeps working whether
+/// or not the name it picks turns out to be ambiguous.
+fn union_selection(layers: &[ResolvedLayer], names: &[String]) -> LayerSelection {
+    let mut mask = vec![false; layers.len()];
+    for layer in layers {
+        if !names.iter().any(|name| layer.id == LayerId::new(name)) {
+            continue;
+        }
+        let LayerSelection::Mask(selected) = &layer.selection else {
+            continue;
+        };
+        for (slot, picked) in mask.iter_mut().zip(selected) {
+            *slot |= picked;
+        }
+    }
+    LayerSelection::Mask(mask)
+}
+
 /// The [`AssetLoader`] for `.aseprite` / `.ase` files.
 ///
 /// Registered automatically by [`AsepriteLoaderPlugin`].
@@ -283,11 +384,9 @@ impl AssetLoader for AsepriteLoader {
         };
 
         // ----------------------------- composite (visible layers or custom selection)
+        let resolved_layers = resolve_layers(&raw);
         let composite_selection = match &settings.visible_layers {
-            Some(layers) => {
-                let names: Vec<&str> = layers.iter().map(|s| s.as_str()).collect();
-                raw.select_layers_by_name(&names)
-            }
+            Some(names) => union_selection(&resolved_layers, names),
             None => LayerSelection::Visible,
         };
         let composite_ids = render_frames(
@@ -309,18 +408,11 @@ impl AssetLoader for AsepriteLoader {
         let mut layer_entries: Vec<LayerEntry> = Vec::new();
         let mut per_layer_ids: Vec<(LayerId, Vec<AssetId<Image>>)> = Vec::new();
 
-        for layer in raw.layers() {
-            let layer_id = LayerId::new(&layer.name);
-            layer_entries.push(LayerEntry::new(layer_id, layer.visible));
+        for layer in resolved_layers {
+            layer_entries.push(LayerEntry::new(layer.id, layer.visible));
 
-            let selection = raw.select_layers_by_name(&[&layer.name]);
-            let ids = render_frames(
-                &raw,
-                &selection,
-                &settings.sampler,
-                &mut all_images,
-            )?;
-            per_layer_ids.push((layer_id, ids));
+            let ids = render_frames(&raw, &layer.selection, &settings.sampler, &mut all_images)?;
+            per_layer_ids.push((layer.id, ids));
         }
 
         // Aseprite stores layers bottom-to-top; reverse so index 0 = topmost
@@ -364,6 +456,14 @@ impl AssetLoader for AsepriteLoader {
             keys: Vec<SliceKeyMeta>,
         }
 
+        // A nine-patch centre with no area cannot divide anything, so it reads
+        // as "this key sets no centre" rather than as a degenerate slicer.
+        let nine_patch_of = |key: &aseprite_loader::binary::chunks::slice::SliceKey| {
+            key.nine_patch
+                .filter(|np| np.width > 0 && np.height > 0)
+                .map(|np| Vec4::new(np.x as f32, np.y as f32, np.width as f32, np.height as f32))
+        };
+
         let raw_slice_data: Vec<RawSlice> = raw
             .slices()
             .iter()
@@ -372,37 +472,28 @@ impl AssetLoader for AsepriteLoader {
                 let min = Vec2::new(slice_key.x as f32, slice_key.y as f32);
                 let max = min + Vec2::new(slice_key.width as f32, slice_key.height as f32);
 
-                let pivot = slice_key
-                    .pivot
-                    .map(|p| Vec2::new(p.x as f32, p.y as f32));
-                let nine_patch = slice_key.nine_patch.map(|np| {
-                    Vec4::new(np.x as f32, np.y as f32, np.width as f32, np.height as f32)
-                });
+                let pivot = slice_key.pivot.map(|p| Vec2::new(p.x as f32, p.y as f32));
 
                 let keys: Vec<SliceKeyMeta> = slice
                     .slice_keys
                     .iter()
                     .map(|key| {
                         let k_min = Vec2::new(key.x as f32, key.y as f32);
-                        let k_max =
-                            k_min + Vec2::new(key.width as f32, key.height as f32);
+                        let k_max = k_min + Vec2::new(key.width as f32, key.height as f32);
                         SliceKeyMeta {
                             frame: key.frame_number as usize,
                             rect: Rect::from_corners(k_min, k_max),
-                            pivot: key
-                                .pivot
-                                .map(|p| Vec2::new(p.x as f32, p.y as f32)),
-                            nine_patch: key.nine_patch.map(|np| {
-                                Vec4::new(
-                                    np.x as f32,
-                                    np.y as f32,
-                                    np.width as f32,
-                                    np.height as f32,
-                                )
-                            }),
+                            pivot: key.pivot.map(|p| Vec2::new(p.x as f32, p.y as f32)),
+                            nine_patch: nine_patch_of(key),
                         }
                     })
                     .collect();
+
+                // A key written before its centre was dragged out carries an
+                // empty one. Every frame of the slice falls back to the first
+                // centre that is actually a centre, so a partly-annotated
+                // timeline slices the same way from end to end.
+                let nine_patch = keys.iter().find_map(|key| key.nine_patch);
 
                 RawSlice {
                     name: slice.name.to_owned(),
@@ -457,8 +548,7 @@ impl AssetLoader for AsepriteLoader {
         let composite_slices = build_slices(&composite_indicies, &mut layout);
         let all_slices = build_slices(&all_indicies, &mut layout);
 
-        let mut per_layer_data: Vec<(LayerId, Vec<usize>, HashMap<String, SliceMeta>)> =
-            Vec::new();
+        let mut per_layer_data: Vec<(LayerId, Vec<usize>, HashMap<String, SliceMeta>)> = Vec::new();
         for (layer_id, layer_indicies) in per_layer_resolved {
             let slices = build_slices(&layer_indicies, &mut layout);
             per_layer_data.push((layer_id, layer_indicies, slices));
