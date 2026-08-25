@@ -1,5 +1,7 @@
-## Unreleased
+## 0.10.0
 
+- **the authored centre is the border**: a slice carrying a nine-patch is sliced on the centre drawn in Aseprite, and a caller that sets its own `border` no longer overrides it — the nine-patch belongs to the art. A caller that already asked to be sliced keeps the rest of its slicer (`center_scale_mode`, `sides_scale_mode`, `max_corner_scale`), which the file cannot express.
+- **per-frame `AnimationFrameChanged` message**, and reverse and ping-pong tags now report the frame they are actually on rather than drifting.
 - **group layers render their contents**: selecting a group by id draws every layer beneath it, where before it drew nothing (groups hold no cels of their own).
 - **layer ids address one layer each**: a name repeated across groups — two colour groups each holding a `Main` — is qualified with its group path (`Blue/Main`). Unique names are unchanged, as are the sub-asset labels derived from them.
 - `AsepriteLoaderSettings::visible_layers` accepts group names, and resolves each entry against the same ids.
