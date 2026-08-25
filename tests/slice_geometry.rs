@@ -122,3 +122,46 @@ fn looking_up_an_unknown_slice_finds_nothing() {
     assert!(aseprite.slice("panel").is_none(), "names are exact");
     assert!(aseprite.slice("Missing").is_none());
 }
+
+/// The component carries the handle and the name together, so it can answer
+/// for its own geometry without a caller pairing the two by hand.
+#[test]
+fn an_ase_slice_resolves_its_own_geometry() {
+    let (app, handle) = loaded("slice_geometry_component");
+    let aseprites = app.world().resource::<Assets<Aseprite>>();
+
+    let panel = AseSlice::new(handle.clone(), "Panel");
+    assert_eq!(panel.size(aseprites), Some(Vec2::new(12.0, 10.0)));
+    assert_eq!(
+        panel.border(aseprites),
+        Some(BorderRect {
+            min_inset: Vec2::new(3.0, 2.0),
+            max_inset: Vec2::new(3.0, 3.0),
+        }),
+    );
+
+    let icon = AseSlice::new(handle.clone(), "Icon");
+    assert_eq!(icon.size(aseprites), Some(Vec2::new(4.0, 4.0)));
+    assert_eq!(
+        icon.border(aseprites),
+        None,
+        "a slice with no centre reports no insets",
+    );
+
+    let missing = AseSlice::new(handle, "Missing");
+    assert!(missing.meta(aseprites).is_none());
+    assert!(missing.size(aseprites).is_none());
+    assert!(missing.border(aseprites).is_none());
+}
+
+/// A handle that has not loaded resolves to nothing rather than panicking.
+#[test]
+fn an_ase_slice_on_an_unloaded_sheet_resolves_to_nothing() {
+    let (app, _handle) = loaded("slice_geometry_unloaded");
+    let aseprites = app.world().resource::<Assets<Aseprite>>();
+
+    let dangling = AseSlice::new(Handle::default(), "Panel");
+    assert!(dangling.meta(aseprites).is_none());
+    assert!(dangling.size(aseprites).is_none());
+    assert!(dangling.border(aseprites).is_none());
+}

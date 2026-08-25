@@ -194,6 +194,30 @@ impl AseSlice {
             aseprite,
         }
     }
+
+    /// The slice this component draws.
+    ///
+    /// `None` while the sheet is still loading, or when the file defines no
+    /// slice by this name. The component carries both halves of the lookup,
+    /// so resolving through it is the only way to be sure the sheet and the
+    /// name belong together.
+    #[must_use]
+    pub fn meta<'a>(&self, aseprites: &'a Assets<Aseprite>) -> Option<&'a SliceMeta> {
+        aseprites.get(&self.aseprite)?.slices.get(&self.name)
+    }
+
+    /// The authored size of the slice this component draws.
+    #[must_use]
+    pub fn size(&self, aseprites: &Assets<Aseprite>) -> Option<Vec2> {
+        self.meta(aseprites).map(SliceMeta::size)
+    }
+
+    /// The nine-patch insets of the slice this component draws, or `None`
+    /// when the artist gave it no centre.
+    #[must_use]
+    pub fn border(&self, aseprites: &Assets<Aseprite>) -> Option<BorderRect> {
+        self.meta(aseprites)?.border()
+    }
 }
 
 pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(

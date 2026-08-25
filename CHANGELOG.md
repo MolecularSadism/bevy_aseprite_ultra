@@ -1,6 +1,6 @@
 ## Unreleased
 
-- **slice geometry accessors**: `SliceMeta::size` and `SliceMeta::border` hand back the slice's authored size and its nine-patch insets, and `Aseprite::slice` looks one up by name — so a caller sizing a UI node off the art no longer rebuilds either from `rect` and the raw centre.
+- **a slice answers for its own geometry**: `AseSlice::meta`, `AseSlice::size` and `AseSlice::border` resolve through the component, which already holds the sheet and the name together — so a caller sizing a UI node off the art neither rebuilds the insets from `rect` and the raw centre nor risks pairing one sheet's handle with another's slice name. `SliceMeta::size`, `SliceMeta::border` and `Aseprite::slice` are the same answers for callers holding the asset rather than the component.
 - **nine-patch centres that overflow their slice read as unset**: a centre dragged past an edge gives that edge a negative inset, which no slicer can express. Such a centre is now ignored, with a warning naming the slice and its numbers; an inset of exactly zero stays legal.
 
 ## 0.10.0
