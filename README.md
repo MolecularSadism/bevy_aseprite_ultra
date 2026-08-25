@@ -255,6 +255,32 @@ cmd.spawn(
 # }
 ```
 
+### Slice Geometry
+
+A slice knows the size it was authored at and, when the artist drew a
+nine-patch centre, the insets that centre implies — so a node can size itself
+to the art instead of hard-coding it:
+
+```rust
+# use bevy::prelude::*;
+# use bevy_aseprite_ultra::prelude::*;
+fn size_to_slice(mut nodes: Query<(&mut Node, &AseSlice)>, aseprites: Res<Assets<Aseprite>>) {
+    for (mut node, slice) in &mut nodes {
+        let Some(meta) = aseprites
+            .get(&slice.aseprite)
+            .and_then(|aseprite| aseprite.slice(&slice.name))
+        else {
+            continue;
+        };
+        let size = meta.size();
+        node.width = Val::Px(size.x);
+        node.height = Val::Px(size.y);
+        // `None` unless the slice carries a nine-patch centre.
+        let _insets = meta.border();
+    }
+}
+```
+
 ### Runtime Slice Switching
 
 Mutate `AseTexture` to switch slices at runtime:

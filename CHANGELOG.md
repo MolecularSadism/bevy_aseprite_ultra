@@ -6,6 +6,8 @@
 - **layer ids address one layer each**: a name repeated across groups — two colour groups each holding a `Main` — is qualified with its group path (`Blue/Main`). Unique names are unchanged, as are the sub-asset labels derived from them.
 - `AsepriteLoaderSettings::visible_layers` accepts group names, and resolves each entry against the same ids.
 - **render layers reach the children**: an `AseTexture` renders through child entities, which until now fell to the default layer — a camera filtering to the parent's layer drew nothing, and cameras it was excluded from drew it anyway. Children now mirror the parent's `RenderLayers`, at spawn and on every change.
+- **slice geometry accessors**: `SliceMeta::size` and `SliceMeta::border` hand back the slice's authored size and its nine-patch insets, and `Aseprite::slice` looks one up by name — so a caller sizing a UI node off the art no longer rebuilds either from `rect` and the raw centre.
+- **nine-patch centres that overflow their slice read as unset**: a centre dragged past an edge gives that edge a negative inset, which no slicer can express. Such a centre is now ignored, with a warning naming the slice and its numbers; an inset of exactly zero stays legal.
 - **empty nine-patch centres read as unset**: Aseprite writes a centre on every key of a nine-patch slice, so a key added before the centre was dragged out carried a zero-area one and sliced into nothing. Such a key now defers to the first key that sets a real centre, and a slice with no real centre anywhere is not a nine-patch.
 
 ## 0.9.0

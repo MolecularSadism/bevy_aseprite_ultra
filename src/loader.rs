@@ -10,7 +10,7 @@ use bevy::{
     platform::collections::HashMap,
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
-    sprite::Anchor,
+    sprite::{Anchor, BorderRect},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -62,6 +62,15 @@ impl Aseprite {
             return self.frame_indicies.last().cloned().unwrap_or_default();
         }
         self.frame_indicies[frame]
+    }
+
+    /// The named slice, or `None` when this variant defines none by that name.
+    ///
+    /// Slice names are file-wide, so every sub-asset of a file carries the
+    /// same set; only the atlas positions behind them differ.
+    #[must_use]
+    pub fn slice(&self, name: &str) -> Option<&SliceMeta> {
+        self.slices.get(name)
     }
 
     /// All layer IDs in front-to-back order.
@@ -166,6 +175,26 @@ pub struct SliceMeta {
 }
 
 impl SliceMeta {
+    /// The slice's size in pixels, as authored on the canvas.
+    ///
+    /// This is the art's own size, independent of whatever ends up drawing
+    /// it, so it is the natural size a UI node should fall back to.
+    #[must_use]
+    pub fn size(&self) -> Vec2 {
+        self.rect.size()
+    }
+
+    /// The nine-patch border insets, or `None` when the slice has no centre.
+    ///
+    /// The file stores the centre rectangle; the insets are the distance from
+    /// each edge to it. The loader drops centres that do not fit the slice, so
+    /// these are never negative.
+    #[must_use]
+    pub fn border(&self) -> Option<BorderRect> {
+        self.nine_patch
+            .map(|np| crate::slice::nine_patch_to_slicer(np, self.rect.size()).border)
+    }
+
     /// This slice's atlas position for a specific absolute frame number.
     ///
     /// Falls back to `atlas_id` (the slice's frame-0 position) when
@@ -456,12 +485,32 @@ impl AssetLoader for AsepriteLoader {
             keys: Vec<SliceKeyMeta>,
         }
 
-        // A nine-patch centre with no area cannot divide anything, so it reads
-        // as "this key sets no centre" rather than as a degenerate slicer.
-        let nine_patch_of = |key: &aseprite_loader::binary::chunks::slice::SliceKey| {
-            key.nine_patch
-                .filter(|np| np.width > 0 && np.height > 0)
-                .map(|np| Vec4::new(np.x as f32, np.y as f32, np.width as f32, np.height as f32))
+        // A centre with no area cannot divide anything, and one reaching past
+        // the key's own bounds would invert an inset; neither describes a
+        // nine-patch, so both read as "this key sets no centre" rather than as
+        // a degenerate slicer. An inset of exactly zero is a legal edgeless
+        // border and stays.
+        let nine_patch_of = |name: &str, key: &aseprite_loader::binary::chunks::slice::SliceKey| {
+            let np = key.nine_patch.filter(|np| np.width > 0 && np.height > 0)?;
+            let left = i64::from(np.x);
+            let top = i64::from(np.y);
+            let right = i64::from(key.width) - left - i64::from(np.width);
+            let bottom = i64::from(key.height) - top - i64::from(np.height);
+            if left < 0 || top < 0 || right < 0 || bottom < 0 {
+                warn!(
+                    "slice {name:?} frame {}: nine-patch centre ({}, {}, {}x{}) does not fit its \
+                     {}x{} bounds — insets left {left}, top {top}, right {right}, bottom {bottom}. \
+                     Ignoring the centre; fix it in Aseprite.",
+                    key.frame_number, np.x, np.y, np.width, np.height, key.width, key.height,
+                );
+                return None;
+            }
+            Some(Vec4::new(
+                np.x as f32,
+                np.y as f32,
+                np.width as f32,
+                np.height as f32,
+            ))
         };
 
         let raw_slice_data: Vec<RawSlice> = raw
@@ -484,7 +533,7 @@ impl AssetLoader for AsepriteLoader {
                             frame: key.frame_number as usize,
                             rect: Rect::from_corners(k_min, k_max),
                             pivot: key.pivot.map(|p| Vec2::new(p.x as f32, p.y as f32)),
-                            nine_patch: nine_patch_of(key),
+                            nine_patch: nine_patch_of(slice.name, key),
                         }
                     })
                     .collect();

@@ -3,7 +3,8 @@
 //! Aseprite writes the centre on every key of a nine-patch slice, so a key
 //! added before the centre was dragged out carries an empty one. An empty
 //! centre divides the slice into nothing, so it reads as "no centre set here"
-//! and the slice falls back to the first key that sets a real one.
+//! and the slice falls back to the first key that sets a real one. A centre
+//! that overflows its slice is rejected the same way.
 
 mod support;
 
@@ -237,4 +238,87 @@ fn a_callers_scale_mode_survives_the_authored_centre() {
     assert_eq!(slicer.center_scale_mode, tile);
     assert_eq!(slicer.sides_scale_mode, tile);
     assert_eq!(slicer.max_corner_scale, 2.0);
+}
+
+/// A single-frame, single-slice file: the smallest fixture that can carry a
+/// malformed centre.
+fn one_slice(bounds: (i32, i32, u32, u32), centre: Option<(i32, i32, u32, u32)>) -> Fixture {
+    Fixture {
+        canvas: (64, 16),
+        frames: 1,
+        frame_duration: 100,
+        layers: vec![Layer::normal("Main", 0)],
+        cels: vec![Cel {
+            frame: 0,
+            layer_index: 0,
+            position: (0, 0),
+            colour: WHITE,
+        }],
+        slices: vec![Slice {
+            name: "Panel",
+            keys: vec![SliceKey {
+                frame: 0,
+                bounds,
+                centre,
+            }],
+        }],
+    }
+}
+
+fn loaded_slice(name: &str, fixture: &Fixture) -> SliceMeta {
+    let (app, handles) = support::load(name, fixture, &[""]);
+    let aseprites = app.world().resource::<Assets<Aseprite>>();
+    aseprites.get(&handles[0]).expect("composite loaded").slices["Panel"].clone()
+}
+
+/// A centre dragged past an edge would give that edge a negative inset, which
+/// no slicer can express. The art is still there, so the slice loads — it just
+/// is not a nine-patch.
+#[test]
+fn a_centre_taller_than_its_bounds_is_rejected() {
+    // 48x1 strip, centre one pixel below the bottom edge: bottom = -1.
+    let slice = loaded_slice(
+        "nine_patch_overflow_bottom",
+        &one_slice((0, 0, 48, 1), Some((13, 1, 22, 1))),
+    );
+
+    assert_eq!(slice.size(), Vec2::new(48.0, 1.0), "the slice still loads");
+    assert_eq!(slice.nine_patch, None, "a negative inset is not a border");
+    assert_eq!(slice.border(), None);
+    assert_eq!(slice.keys[0].nine_patch, None);
+}
+
+#[test]
+fn a_centre_wider_than_its_bounds_is_rejected() {
+    // 12x12 panel, centre one pixel past the right edge: right = -1.
+    let slice = loaded_slice(
+        "nine_patch_overflow_right",
+        &one_slice((0, 0, 12, 12), Some((3, 3, 10, 9))),
+    );
+
+    assert_eq!(slice.nine_patch, None);
+    assert_eq!(slice.border(), None);
+}
+
+/// Zero is a legal inset — it means that edge has no border, not that the
+/// centre is malformed.
+#[test]
+fn a_centre_flush_with_an_edge_survives() {
+    let slice = loaded_slice(
+        "nine_patch_flush_edge",
+        &one_slice((0, 0, 12, 12), Some((0, 3, 12, 5))),
+    );
+
+    assert_eq!(
+        slice.nine_patch,
+        Some(Vec4::new(0.0, 3.0, 12.0, 5.0)),
+        "a centre spanning the full width borders top and bottom only",
+    );
+    assert_eq!(
+        slice.border(),
+        Some(BorderRect {
+            min_inset: Vec2::new(0.0, 3.0),
+            max_inset: Vec2::new(0.0, 4.0),
+        }),
+    );
 }
