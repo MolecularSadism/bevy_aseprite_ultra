@@ -865,19 +865,19 @@ fn next_frame(
             }
         }
         AnimationDirection::Reverse => {
-            let next = frame.0.checked_sub(1).unwrap_or(*range.end());
-
-            if next == *range.end() {
+            // The cycle ends on the range's own first frame, not on an
+            // underflow past zero: a tag whose range does not start at zero
+            // would otherwise never reach the test and would walk out of its
+            // own range. Wrapping returns to the last frame, which is where
+            // reverse playback begins.
+            if frame.0 <= *range.start() {
                 if handle_cycle_end(&mut anim, &mut events, trigger.0) {
-                    frame.0 = range.end() - 1;
-                    state.relative_frame = range.end() - range.start() - 1;
+                    frame.0 = *range.end();
+                    state.relative_frame = range.end() - range.start();
                 }
             } else {
-                frame.0 = next;
-                state.relative_frame = state
-                    .relative_frame
-                    .checked_sub(1)
-                    .unwrap_or(range.end() - range.start() - 1);
+                frame.0 -= 1;
+                state.relative_frame = state.relative_frame.saturating_sub(1);
             }
         }
         AnimationDirection::PingPong | AnimationDirection::PingPongReverse => {
@@ -1507,11 +1507,12 @@ mod tests {
 
         // The first update has a zero delta and only reports the clean initial
         // frame 0; every later update ticks once, stepping the frame down and
-        // wrapping at 0 (the wrap re-enters at the last held frame, 2).
-        assert_eq!(frames, vec![0, 2, 1, 0, 2]);
+        // wrapping at 0. The wrap re-enters at the range's last frame, 3 —
+        // reverse plays the whole range, so the final frame is not skipped.
+        assert_eq!(frames, vec![0, 3, 2, 1, 0]);
         let state = app.world().get::<AnimationState>(entity).unwrap();
-        assert_eq!(state.relative_frame, 2);
-        assert_eq!(app.world().get::<AseFrame>(entity).unwrap().0, 2);
+        assert_eq!(state.relative_frame, 0);
+        assert_eq!(app.world().get::<AseFrame>(entity).unwrap().0, 0);
     }
 
     /// Ping-pong playback on a tagged animation without an `AseTag` (absolute
@@ -1575,5 +1576,56 @@ mod tests {
             .id();
         app.update();
         assert_eq!(last_frame(&app, child), Some(3));
+    }
+
+    /// Reverse walks the whole tag and stays inside it, wherever the tag sits
+    /// in the file.
+    ///
+    /// `AseFrame` is relative to the tag, so a tag at 5..=9 has frames 0..=4;
+    /// reverse must visit every one of them and wrap back to the last, not
+    /// step below zero and strand the animation outside its own range.
+    #[test]
+    fn reverse_walks_every_frame_of_a_tag_wherever_it_sits() {
+        use crate::loader::TagMeta;
+
+        for (name, start, end) in [("zero", 0u16, 3u16), ("offset", 5u16, 9u16)] {
+            let span = end - start;
+            // No `AseTag` component, so frames stay absolute — the shape every
+            // example spawns.
+            let mut ase = test_aseprite();
+            ase.frame_durations = vec![Duration::from_millis(100); 10];
+            ase.frame_indicies = (0..10).collect();
+            ase.tags.insert(
+                name.to_string(),
+                TagMeta {
+                    direction: RawDirection::Reverse,
+                    range: start..=end,
+                    repeat: 0,
+                },
+            );
+            let (mut app, handle) = plugin_app(ase, 120);
+            let entity = app
+                .world_mut()
+                .spawn((AseAnimation::tag(name), AnimationLayer::new(handle)))
+                .id();
+
+            let mut seen = Vec::new();
+            for _ in 0..(span + 1) * 2 {
+                app.update();
+                let frame = app.world().get::<AseFrame>(entity).expect("frame").0;
+                seen.push(frame);
+                assert!(
+                    (start..=end).contains(&frame),
+                    "{name}: frame {frame} left the tag's {start}..={end}, saw {seen:?}",
+                );
+            }
+
+            for expected in start..=end {
+                assert!(
+                    seen.contains(&expected),
+                    "{name}: frame {expected} never played, saw {seen:?}",
+                );
+            }
+        }
     }
 }
