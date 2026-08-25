@@ -9,7 +9,7 @@ rendering, and custom materials.
 
 | Bevy Version | Plugin Version |
 | -----------: | -------------: |
-|         0.18 |          0.9.0 |
+|         0.18 |         0.10.0 |
 |         0.17 |          0.7.0 |
 |         0.16 |          0.6.1 |
 |         0.15 |          0.4.1 |
