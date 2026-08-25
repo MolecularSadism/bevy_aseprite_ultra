@@ -89,8 +89,7 @@ impl RenderSlice for ImageNode {
         // site that already asked to be sliced keeps the rest of its slicer —
         // how the middle and sides scale, and the corner cap — because those
         // have no representation in the file.
-        if let Some(np) = slice_meta.nine_patch {
-            let border = nine_patch_to_slicer(np, slice_meta.rect.size()).border;
+        if let Some(border) = slice_meta.border() {
             self.image_mode = NodeImageMode::Sliced(match &self.image_mode {
                 NodeImageMode::Sliced(slicer) => TextureSlicer {
                     border,
@@ -113,8 +112,7 @@ impl RenderSlice for Sprite {
             layout: aseprite.atlas_layout.clone(),
             index: slice_meta.atlas_id,
         });
-        if let Some(np) = slice_meta.nine_patch {
-            let border = nine_patch_to_slicer(np, slice_meta.rect.size()).border;
+        if let Some(border) = slice_meta.border() {
             self.image_mode = SpriteImageMode::Sliced(match &self.image_mode {
                 SpriteImageMode::Sliced(slicer) => TextureSlicer {
                     border,
