@@ -64,7 +64,9 @@ impl RenderAnimation for MyMaterial {
             return;
         };
         self.image = aseprite.atlas_image.clone();
-        let index = aseprite.get_atlas_index(usize::from(frame));
+        let Some(index) = aseprite.atlas_index(usize::from(frame)) else {
+            return;
+        };
         self.texture_min = atlas_layout.textures[index].min;
         self.texture_max = atlas_layout.textures[index].max;
         self.time = extra.0.elapsed_secs();

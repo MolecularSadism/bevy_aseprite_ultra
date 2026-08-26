@@ -37,8 +37,10 @@ impl Plugin for AsepriteLoaderPlugin {
 #[derive(Asset, Default, TypePath, Debug, Clone)]
 #[cfg_attr(feature = "asset_processing", derive(Serialize, Deserialize))]
 pub struct Aseprite {
-    pub slices: HashMap<String, SliceMeta>,
-    pub tags: HashMap<String, TagMeta>,
+    /// Read through [`slice`](Self::slice) / [`slices`](Self::slices).
+    pub(crate) slices: HashMap<String, SliceMeta>,
+    /// Read through [`tag`](Self::tag) / [`tags`](Self::tags).
+    pub(crate) tags: HashMap<String, TagMeta>,
     pub frame_durations: Vec<std::time::Duration>,
     #[cfg_attr(feature = "asset_processing", serde(skip))]
     pub atlas_layout: Handle<TextureAtlasLayout>,
@@ -49,19 +51,32 @@ pub struct Aseprite {
     #[cfg_attr(feature = "asset_processing", serde(skip))]
     pub source_path: String,
     /// All layers in **front-to-back order** (index 0 = topmost layer in the
-    /// Aseprite editor, renders in front). Each entry carries the layer's
-    /// file-defined visibility. Reorder or toggle `visible` at runtime to
-    /// change rendering.
-    #[cfg_attr(feature = "asset_processing", serde(skip))]
-    pub layers: Vec<LayerEntry>,
+    /// Aseprite editor, renders in front), each carrying the layer's
+    /// file-defined visibility. Read through [`layer_ids`](Self::layer_ids) /
+    /// [`visible_layer_ids`](Self::visible_layer_ids); what a given entity
+    /// draws is chosen per entity on its
+    /// [`AseTexture`](crate::layers::AseTexture), never on the shared asset.
+    #[cfg_attr(feature = "asset_processing", serde(with = "layer_serde"))]
+    pub(crate) layers: Vec<LayerEntry>,
 }
 
 impl Aseprite {
-    pub fn get_atlas_index(&self, frame: usize) -> usize {
-        if self.frame_indicies.len() <= frame {
-            return self.frame_indicies.last().cloned().unwrap_or_default();
-        }
-        self.frame_indicies[frame]
+    /// This variant's atlas position for `frame`, clamped to the last frame.
+    ///
+    /// Clamping is deliberate: an animation whose tag outlives the frames of a
+    /// per-layer variant keeps drawing that layer's final frame instead of
+    /// vanishing. Returns `None` for an asset with no frames at all.
+    #[must_use]
+    pub fn atlas_index(&self, frame: usize) -> Option<usize> {
+        let last = self.frame_indicies.len().checked_sub(1)?;
+        Some(self.frame_indicies[frame.min(last)])
+    }
+
+    /// In-crate shim over [`atlas_index`](Self::atlas_index) for the render
+    /// paths that still expect an index unconditionally. Not public: index `0`
+    /// for a frameless asset is a sentinel, which the public accessor avoids.
+    pub(crate) fn get_atlas_index(&self, frame: usize) -> usize {
+        self.atlas_index(frame).unwrap_or_default()
     }
 
     /// The named slice, or `None` when this variant defines none by that name.
@@ -73,50 +88,64 @@ impl Aseprite {
         self.slices.get(name)
     }
 
+    /// Every slice of this variant, by name, in arbitrary order.
+    pub fn slices(&self) -> impl Iterator<Item = (&str, &SliceMeta)> {
+        self.slices.iter().map(|(name, meta)| (name.as_str(), meta))
+    }
+
+    /// The named animation tag, or `None` when the file defines none by that
+    /// name. Tags are file-wide, like slices.
+    #[must_use]
+    pub fn tag(&self, name: &str) -> Option<&TagMeta> {
+        self.tags.get(name)
+    }
+
+    /// Every animation tag of the file, by name, in arbitrary order.
+    pub fn tags(&self) -> impl Iterator<Item = (&str, &TagMeta)> {
+        self.tags.iter().map(|(name, meta)| (name.as_str(), meta))
+    }
+
     /// All layer IDs in front-to-back order.
     pub fn layer_ids(&self) -> impl Iterator<Item = LayerId> + '_ {
         self.layers.iter().map(|e| e.id)
     }
 
-    /// Layer IDs that are currently marked visible, in front-to-back order.
+    /// Layer IDs marked visible in the file, in front-to-back order.
+    ///
+    /// This is the file's own state and never changes after load. To show,
+    /// hide or reorder layers at runtime, drive the entity's
+    /// [`AseTexture`](crate::layers::AseTexture) — the asset is shared by every
+    /// entity that references it, so it is not where per-entity state belongs.
     pub fn visible_layer_ids(&self) -> impl Iterator<Item = LayerId> + '_ {
         self.layers.iter().filter(|e| e.visible).map(|e| e.id)
     }
+}
 
-    /// Set visibility for a layer by name on the **asset** (affects all entities).
-    /// For per-entity visibility, use
-    /// [`AseTexture::toggle_layer_on`](crate::layers::AseTexture::toggle_layer_on) /
-    /// [`toggle_layer_off`](crate::layers::AseTexture::toggle_layer_off) instead.
-    ///
-    /// Returns `true` if the layer was found.
-    pub fn set_layer_visible(&mut self, id: LayerId, visible: bool) -> bool {
-        if let Some(entry) = self.layers.iter_mut().find(|e| e.id == id) {
-            entry.visible = visible;
-            true
-        } else {
-            false
-        }
+/// Layers round-trip through the `asset_processing` cache as names, since
+/// [`LayerId`] interns its string and carries no serde impl of its own.
+#[cfg(feature = "asset_processing")]
+mod layer_serde {
+    use super::{LayerEntry, LayerId};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        layers: &[LayerEntry],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        layers
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry.visible))
+            .collect::<Vec<_>>()
+            .serialize(serializer)
     }
 
-    /// Move the layer with the given ID to a new index (front-to-back).
-    /// Index 0 = topmost layer (renders in front).
-    ///
-    /// This modifies the **asset** directly, affecting all entities that
-    /// reference it. For per-entity overrides, use
-    /// [`AseTexture::layer_order`](crate::layers::AseTexture::layer_order) or
-    /// [`AseTexture::reorder_layer`](crate::layers::AseTexture::reorder_layer)
-    /// instead.
-    ///
-    /// Returns `true` if the layer was found and moved.
-    pub fn reorder_layer(&mut self, id: LayerId, new_index: usize) -> bool {
-        if let Some(old) = self.layers.iter().position(|e| e.id == id) {
-            let entry = self.layers.remove(old);
-            let idx = new_index.min(self.layers.len());
-            self.layers.insert(idx, entry);
-            true
-        } else {
-            false
-        }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<LayerEntry>, D::Error> {
+        Ok(Vec::<(String, bool)>::deserialize(deserializer)?
+            .into_iter()
+            .map(|(name, visible)| LayerEntry::new(LayerId::new(&name), visible))
+            .collect())
     }
 }
 
@@ -164,7 +193,7 @@ pub struct SliceMeta {
     pub nine_patch: Option<Vec4>,
     pub keys: Vec<SliceKeyMeta>,
     /// The slice's own atlas position for each frame of its aseprite variant
-    /// (composite/all/per-layer), parallel to [`Aseprite::frame_indicies`].
+    /// (composite/all/per-layer), parallel to the variant's own frame list.
     /// A slice is defined in canvas coordinates, so its crop rect is
     /// identical across frames — only *which frame's rendered image* it
     /// crops into changes. Empty for slices loaded before this field existed
@@ -340,6 +369,14 @@ pub struct AsepriteLoaderSettings {
     /// When set, only these layers are composited for the default asset.
     /// `None` means all visible layers (the default).
     pub visible_layers: Option<Vec<String>>,
+    /// Edge length, in pixels, of the square the packed atlas may not exceed.
+    ///
+    /// One file packs its canvas once per frame per variant — composite, all,
+    /// and one per layer — so a large canvas with many frames and layers can
+    /// exhaust the default. Overflowing the cap fails the load with an
+    /// `AsepriteError` rather than cropping silently; raise it here when a
+    /// file legitimately needs more than the GPU-safe default of 4096.
+    pub max_atlas_size: u32,
 }
 
 impl Default for AsepriteLoaderSettings {
@@ -347,9 +384,13 @@ impl Default for AsepriteLoaderSettings {
         Self {
             sampler: ImageSampler::nearest(),
             visible_layers: None,
+            max_atlas_size: DEFAULT_MAX_ATLAS_SIZE,
         }
     }
 }
+
+/// Widest atlas guaranteed to be within a GPU's texture size limits.
+const DEFAULT_MAX_ATLAS_SIZE: u32 = 4096;
 
 impl AssetLoader for AsepriteLoader {
     type Asset = Aseprite;
@@ -363,10 +404,7 @@ impl AssetLoader for AsepriteLoader {
         load_context: &mut bevy::asset::LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
-        reader
-            .read_to_end(&mut bytes)
-            .await
-            .map_err(|_| AsepriteError::ReadError)?;
+        reader.read_to_end(&mut bytes).await?;
 
         let raw = AsepriteFile::load(&bytes)?;
         let source_path = load_context.path().to_string();
@@ -450,26 +488,39 @@ impl AssetLoader for AsepriteLoader {
 
         // ----------------------------- build shared atlas
         let mut atlas_builder = TextureAtlasBuilder::default();
-        atlas_builder.max_size(UVec2::splat(4096));
+        atlas_builder.max_size(UVec2::splat(settings.max_atlas_size));
         for (id, image) in &all_images {
             atlas_builder.add_texture(Some(*id), image);
         }
         let (mut layout, source, image) = atlas_builder.build()?;
 
-        let resolve_indices = |ids: &[AssetId<Image>]| -> Vec<usize> {
+        // The packer places every texture it accepts, so a missing id means the
+        // frames outgrew `max_atlas_size` — a file problem the game must hear
+        // about, not an index to guess at.
+        let resolve_indices = |ids: &[AssetId<Image>]| -> Result<Vec<usize>, AsepriteError> {
             ids.iter()
-                .map(|id| source.texture_ids.get(id).cloned().unwrap())
+                .map(|id| {
+                    source
+                        .texture_ids
+                        .get(id)
+                        .copied()
+                        .ok_or(AsepriteError::AtlasOverflow {
+                            textures: all_images.len(),
+                            max_size: settings.max_atlas_size,
+                        })
+                })
                 .collect()
         };
 
-        let composite_indicies = resolve_indices(&composite_ids);
-        let all_indicies = resolve_indices(&all_composite_ids);
+        let composite_indicies = resolve_indices(&composite_ids)?;
+        let all_indicies = resolve_indices(&all_composite_ids)?;
 
         // Pre-resolve per-layer indices while source is still available
-        let per_layer_resolved: Vec<(LayerId, Vec<usize>)> = per_layer_ids
-            .iter()
-            .map(|(id, ids)| (*id, resolve_indices(ids)))
-            .collect();
+        let mut per_layer_resolved: Vec<(LayerId, Vec<usize>)> =
+            Vec::with_capacity(per_layer_ids.len());
+        for (id, ids) in &per_layer_ids {
+            per_layer_resolved.push((*id, resolve_indices(ids)?));
+        }
 
         // ----------------------------- raw slice data
         // Collect slice metadata without atlas IDs; each variant (composite,
@@ -516,8 +567,17 @@ impl AssetLoader for AsepriteLoader {
         let raw_slice_data: Vec<RawSlice> = raw
             .slices()
             .iter()
-            .map(|slice| {
-                let slice_key = slice.slice_keys.first().unwrap();
+            .filter_map(|slice| {
+                // A slice's geometry lives entirely in its keys; one without
+                // any describes no region, so there is nothing to register.
+                let Some(slice_key) = slice.slice_keys.first() else {
+                    warn!(
+                        "slice {:?} in {source_path} has no keys and was skipped; \
+                         re-save it from Aseprite with the slice placed on a frame",
+                        slice.name,
+                    );
+                    return None;
+                };
                 let min = Vec2::new(slice_key.x as f32, slice_key.y as f32);
                 let max = min + Vec2::new(slice_key.width as f32, slice_key.height as f32);
 
@@ -544,7 +604,7 @@ impl AssetLoader for AsepriteLoader {
                 // timeline slices the same way from end to end.
                 let nine_patch = keys.iter().find_map(|key| key.nine_patch);
 
-                RawSlice {
+                Some(RawSlice {
                     name: slice.name.to_owned(),
                     rect: Rect::from_corners(min, max),
                     canvas_min: min.as_uvec2(),
@@ -552,7 +612,7 @@ impl AssetLoader for AsepriteLoader {
                     pivot,
                     nine_patch,
                     keys,
-                }
+                })
             })
             .collect();
 
@@ -627,49 +687,31 @@ impl AssetLoader for AsepriteLoader {
             .map(|frame| std::time::Duration::from_millis(u64::from(frame.duration)))
             .collect();
 
-        // ----------------------------- "all" sub-asset
-        load_context.add_labeled_asset(
-            "all".into(),
-            Aseprite {
-                slices: all_slices,
-                tags: tags.clone(),
-                frame_durations: frame_durations.clone(),
-                atlas_layout: atlas_layout.clone(),
-                atlas_image: atlas_image.clone(),
-                frame_indicies: all_indicies,
-                source_path: source_path.clone(),
-                layers: layer_entries.clone(),
-            },
-        );
+        // ----------------------------- variants (one shape, three uses)
+        // Every variant shares the file's tags, frame timings and atlas; only
+        // its slice positions and frame indices differ.
+        let variant = |slices: HashMap<String, SliceMeta>, frame_indicies: Vec<usize>| Aseprite {
+            slices,
+            tags: tags.clone(),
+            frame_durations: frame_durations.clone(),
+            atlas_layout: atlas_layout.clone(),
+            atlas_image: atlas_image.clone(),
+            frame_indicies,
+            source_path: source_path.clone(),
+            layers: layer_entries.clone(),
+        };
 
-        // ----------------------------- per-layer sub-assets
+        load_context.add_labeled_asset("all".into(), variant(all_slices, all_indicies));
+
         for (layer_id, layer_indicies, layer_slices) in per_layer_data {
             load_context.add_labeled_asset(
                 layer_id.as_str().into(),
-                Aseprite {
-                    slices: layer_slices,
-                    tags: tags.clone(),
-                    frame_durations: frame_durations.clone(),
-                    atlas_layout: atlas_layout.clone(),
-                    atlas_image: atlas_image.clone(),
-                    frame_indicies: layer_indicies,
-                    source_path: source_path.clone(),
-                    layers: layer_entries.clone(),
-                },
+                variant(layer_slices, layer_indicies),
             );
         }
 
-        // ----------------------------- main asset (composite visible)
-        Ok(Aseprite {
-            slices: composite_slices,
-            tags,
-            frame_durations,
-            atlas_layout,
-            atlas_image,
-            frame_indicies: composite_indicies,
-            source_path,
-            layers: layer_entries,
-        })
+        // The default asset: every layer the settings leave visible, composited.
+        Ok(variant(composite_slices, composite_indicies))
     }
 
     fn extensions(&self) -> &[&str] {

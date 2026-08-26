@@ -55,7 +55,12 @@ fn partly_annotated() -> Fixture {
 fn an_empty_centre_falls_back_to_the_one_the_slice_defines() {
     let (app, handles) = support::load("nine_patch_keys", &partly_annotated(), &[""]);
     let aseprites = app.world().resource::<Assets<Aseprite>>();
-    let slice = aseprites.get(&handles[0]).expect("composite loaded").slices["Panel"].clone();
+    let slice = aseprites
+        .get(&handles[0])
+        .expect("composite loaded")
+        .slice("Panel")
+        .expect("Panel slice")
+        .clone();
 
     let expected = Vec4::new(
         CENTRE.0 as f32,
@@ -86,7 +91,11 @@ fn a_slice_with_no_centre_anywhere_has_no_nine_patch() {
 
     let (app, handles) = support::load("nine_patch_none", &fixture, &[""]);
     let aseprites = app.world().resource::<Assets<Aseprite>>();
-    let slice = &aseprites.get(&handles[0]).expect("composite loaded").slices["Panel"];
+    let slice = aseprites
+        .get(&handles[0])
+        .expect("composite loaded")
+        .slice("Panel")
+        .expect("Panel slice");
 
     assert_eq!(
         slice.nine_patch, None,
@@ -268,7 +277,12 @@ fn one_slice(bounds: (i32, i32, u32, u32), centre: Option<(i32, i32, u32, u32)>)
 fn loaded_slice(name: &str, fixture: &Fixture) -> SliceMeta {
     let (app, handles) = support::load(name, fixture, &[""]);
     let aseprites = app.world().resource::<Assets<Aseprite>>();
-    aseprites.get(&handles[0]).expect("composite loaded").slices["Panel"].clone()
+    aseprites
+        .get(&handles[0])
+        .expect("composite loaded")
+        .slice("Panel")
+        .expect("Panel slice")
+        .clone()
 }
 
 /// A centre dragged past an edge would give that edge a negative inset, which

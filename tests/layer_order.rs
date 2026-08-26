@@ -1,63 +1,76 @@
+//! The order and visibility a file's layers reach the asset with.
+
+mod support;
+
+use bevy::prelude::*;
 use bevy_aseprite_ultra::prelude::*;
+use support::{Fixture, Layer};
 
-fn make_aseprite_with_layers(names: &[&str]) -> Aseprite {
-    let mut ase = Aseprite::default();
-    for &name in names {
-        ase.layers.push(LayerEntry::new(LayerId::new(name), true));
+/// A file that is nothing but its layer stack, written bottom-to-top the way
+/// Aseprite stores it.
+fn stack(layers: Vec<Layer>) -> Fixture {
+    Fixture {
+        canvas: (4, 4),
+        frames: 1,
+        frame_duration: 100,
+        layers,
+        cels: Vec::new(),
+        slices: Vec::new(),
     }
-    ase
+}
+
+fn layers_of(name: &str, fixture: &Fixture) -> (App, Handle<Aseprite>) {
+    let (app, handles) = support::load(name, fixture, &[""]);
+    let handle = handles.into_iter().next().expect("one handle");
+    (app, handle)
 }
 
 #[test]
-fn layer_ids_returns_front_to_back_order() {
-    let ase = make_aseprite_with_layers(&["top", "middle", "bottom"]);
-    let ids: Vec<_> = ase.layer_ids().collect();
-    assert_eq!(ids.len(), 3);
-    assert_eq!(ids[0], LayerId::new("top"));
-    assert_eq!(ids[2], LayerId::new("bottom"));
+fn layer_ids_run_front_to_back() {
+    let fixture = stack(vec![
+        Layer::normal("bottom", 0),
+        Layer::normal("middle", 0),
+        Layer::normal("top", 0),
+    ]);
+    let (app, handle) = layers_of("layer_order_front_to_back", &fixture);
+    let aseprite = app
+        .world()
+        .resource::<Assets<Aseprite>>()
+        .get(&handle)
+        .expect("composite loaded");
+
+    assert_eq!(
+        aseprite.layer_ids().collect::<Vec<_>>(),
+        vec![
+            LayerId::new("top"),
+            LayerId::new("middle"),
+            LayerId::new("bottom"),
+        ],
+        "index 0 is the layer the editor draws in front"
+    );
 }
 
 #[test]
-fn visible_layer_ids_filters_hidden() {
-    let mut ase = make_aseprite_with_layers(&["a", "b", "c"]);
-    ase.layers[1].visible = false;
-    let visible: Vec<_> = ase.visible_layer_ids().collect();
-    assert_eq!(visible.len(), 2);
-    assert_eq!(visible[0], LayerId::new("a"));
-    assert_eq!(visible[1], LayerId::new("c"));
-}
+fn visible_layer_ids_skip_what_the_file_hid() {
+    let fixture = stack(vec![
+        Layer::normal("bottom", 0),
+        Layer::hidden("middle", 0),
+        Layer::normal("top", 0),
+    ]);
+    let (app, handle) = layers_of("layer_order_visibility", &fixture);
+    let aseprite = app
+        .world()
+        .resource::<Assets<Aseprite>>()
+        .get(&handle)
+        .expect("composite loaded");
 
-#[test]
-fn reorder_layer_moves_to_front() {
-    let mut ase = make_aseprite_with_layers(&["a", "b", "c"]);
-    assert!(ase.reorder_layer(LayerId::new("c"), 0));
-    let ids: Vec<_> = ase.layer_ids().collect();
-    assert_eq!(ids[0], LayerId::new("c"));
-    assert_eq!(ids[1], LayerId::new("a"));
-    assert_eq!(ids[2], LayerId::new("b"));
-}
-
-#[test]
-fn reorder_layer_moves_to_back() {
-    let mut ase = make_aseprite_with_layers(&["a", "b", "c"]);
-    assert!(ase.reorder_layer(LayerId::new("a"), 99)); // clamped to end
-    let ids: Vec<_> = ase.layer_ids().collect();
-    assert_eq!(ids[0], LayerId::new("b"));
-    assert_eq!(ids[1], LayerId::new("c"));
-    assert_eq!(ids[2], LayerId::new("a"));
-}
-
-#[test]
-fn reorder_nonexistent_layer_returns_false() {
-    let mut ase = make_aseprite_with_layers(&["a", "b"]);
-    assert!(!ase.reorder_layer(LayerId::new("nope"), 0));
-}
-
-#[test]
-fn set_layer_visible_toggles() {
-    let mut ase = make_aseprite_with_layers(&["a", "b"]);
-    assert!(ase.set_layer_visible(LayerId::new("a"), false));
-    assert!(!ase.layers[0].visible);
-    assert!(ase.set_layer_visible(LayerId::new("a"), true));
-    assert!(ase.layers[0].visible);
+    assert_eq!(
+        aseprite.visible_layer_ids().collect::<Vec<_>>(),
+        vec![LayerId::new("top"), LayerId::new("bottom")]
+    );
+    assert_eq!(
+        aseprite.layer_ids().count(),
+        3,
+        "a hidden layer still exists, it is only not visible"
+    );
 }

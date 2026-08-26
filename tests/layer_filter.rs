@@ -66,7 +66,7 @@ fn composite_frame_pixel_data(app: &App, handle: &Handle<Aseprite>, frame: usize
     let world = app.world();
     let ase = world.resource::<Assets<Aseprite>>().get(handle).unwrap();
 
-    let atlas_index = ase.get_atlas_index(frame);
+    let atlas_index = ase.atlas_index(frame).expect("composite has frames");
     let layout = world
         .resource::<Assets<TextureAtlasLayout>>()
         .get(&ase.atlas_layout)

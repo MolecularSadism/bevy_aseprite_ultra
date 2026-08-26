@@ -20,6 +20,8 @@ pub struct Layer {
     pub name: &'static str,
     pub group: bool,
     pub child_level: u16,
+    /// The layer's visibility flag as the file records it.
+    pub visible: bool,
 }
 
 impl Layer {
@@ -28,6 +30,7 @@ impl Layer {
             name,
             group: false,
             child_level,
+            visible: true,
         }
     }
 
@@ -36,6 +39,15 @@ impl Layer {
             name,
             group: true,
             child_level,
+            visible: true,
+        }
+    }
+
+    /// A normal layer the artist switched off in Aseprite.
+    pub fn hidden(name: &'static str, child_level: u16) -> Self {
+        Self {
+            visible: false,
+            ..Self::normal(name, child_level)
         }
     }
 }
@@ -87,7 +99,7 @@ fn chunk(out: &mut Vec<u8>, kind: u16, body: &[u8]) {
 
 fn layer_chunk(layer: &Layer) -> Vec<u8> {
     let mut body = Vec::new();
-    u16le(&mut body, 1); // flags: visible
+    u16le(&mut body, u16::from(layer.visible)); // flags: bit 0 is visibility
     u16le(&mut body, u16::from(layer.group)); // 0 normal, 1 group
     u16le(&mut body, layer.child_level);
     u16le(&mut body, 0); // default width, ignored
@@ -280,7 +292,7 @@ pub fn first_frame_pixels(app: &App, handle: &Handle<Aseprite>) -> Vec<[u8; 4]> 
         .resource::<Assets<Image>>()
         .get(&aseprite.atlas_image)
         .expect("atlas image");
-    let rect = layout.textures[aseprite.get_atlas_index(0)];
+    let rect = layout.textures[aseprite.atlas_index(0).expect("sub-asset has frames")];
     let width = image.width();
     let data = image.data.as_ref().expect("atlas pixel data");
     (rect.min.y..rect.max.y)
