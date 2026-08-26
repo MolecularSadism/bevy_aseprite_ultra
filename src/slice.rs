@@ -1,8 +1,9 @@
 use crate::animation::{AseFrame, AseTag, resolve_frame};
-use crate::layers::SpriteLayerOf;
+use crate::layers::{SliceId, SpriteLayerOf};
 use crate::loader::{Aseprite, SliceMeta};
 use bevy::{
     ecs::component::Mutable,
+    log::warn_once,
     prelude::*,
     sprite::{Anchor, BorderRect, TextureSlicer},
     sprite_render::Material2d,
@@ -27,6 +28,26 @@ pub fn nine_patch_to_slicer(nine_patch: Vec4, slice_size: Vec2) -> TextureSlicer
     }
 }
 
+/// Fold a slice's own nine-patch centre into whatever slicer the call site
+/// already asked for.
+///
+/// The centre the artist dragged out in Aseprite is the border, always: a
+/// nine-patch is a property of the art, not of what draws it. The rest of an
+/// existing slicer survives — how the middle and sides scale, and the corner
+/// cap — because none of that has a representation in the file.
+fn merge_border(existing: Option<&TextureSlicer>, border: BorderRect) -> TextureSlicer {
+    match existing {
+        Some(slicer) => TextureSlicer {
+            border,
+            ..slicer.clone()
+        },
+        None => TextureSlicer {
+            border,
+            ..default()
+        },
+    }
+}
+
 pub struct AsepriteSlicePlugin;
 
 impl Plugin for AsepriteSlicePlugin {
@@ -37,19 +58,33 @@ impl Plugin for AsepriteSlicePlugin {
         );
         app.add_systems(PostUpdate, render_slice::<Sprite>);
         app.register_type::<AseSlice>();
+        app.register_type::<SliceId>();
     }
 }
 
 /// Any component that implements this trait can be used as a render target for
 /// [`AseSlice`]. The plugin ships with implementations for [`Sprite`],
-/// [`ImageNode`], and [`MeshMaterial2d`] (plus [`MeshMaterial3d`] with the `3d`
+/// [`ImageNode`], and [`MeshMaterial2d`] (plus `MeshMaterial3d` with the `3d`
 /// feature).
 ///
 /// Implement this trait on your own material to use slice data in custom shaders.
 ///
+/// `Extra` is whatever system parameters the implementation needs on top of
+/// the asset and the slice; use a tuple when there is more than one.
+///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
+/// # use bevy::prelude::*;
+/// # use bevy_aseprite_ultra::prelude::*;
+/// #[derive(Default)]
+/// struct MyMaterial {
+///     image: Handle<Image>,
+///     texture_min: UVec2,
+///     texture_max: UVec2,
+///     time: f32,
+/// }
+///
 /// impl RenderSlice for MyMaterial {
 ///     type Extra<'e> = Res<'e, Time>;
 ///     fn render_slice(
@@ -84,22 +119,12 @@ impl RenderSlice for ImageNode {
             layout: aseprite.atlas_layout.clone(),
             index: slice_meta.atlas_id,
         });
-        // The centre the artist dragged out in Aseprite is the border, always:
-        // a nine-patch is a property of the art, not of what draws it. A call
-        // site that already asked to be sliced keeps the rest of its slicer —
-        // how the middle and sides scale, and the corner cap — because those
-        // have no representation in the file.
         if let Some(border) = slice_meta.border() {
-            self.image_mode = NodeImageMode::Sliced(match &self.image_mode {
-                NodeImageMode::Sliced(slicer) => TextureSlicer {
-                    border,
-                    ..slicer.clone()
-                },
-                _ => TextureSlicer {
-                    border,
-                    ..default()
-                },
-            });
+            let existing = match &self.image_mode {
+                NodeImageMode::Sliced(slicer) => Some(slicer),
+                _ => None,
+            };
+            self.image_mode = NodeImageMode::Sliced(merge_border(existing, border));
         }
     }
 }
@@ -113,16 +138,11 @@ impl RenderSlice for Sprite {
             index: slice_meta.atlas_id,
         });
         if let Some(border) = slice_meta.border() {
-            self.image_mode = SpriteImageMode::Sliced(match &self.image_mode {
-                SpriteImageMode::Sliced(slicer) => TextureSlicer {
-                    border,
-                    ..slicer.clone()
-                },
-                _ => TextureSlicer {
-                    border,
-                    ..default()
-                },
-            });
+            let existing = match &self.image_mode {
+                SpriteImageMode::Sliced(slicer) => Some(slicer),
+                _ => None,
+            };
+            self.image_mode = SpriteImageMode::Sliced(merge_border(existing, border));
         }
     }
 }
@@ -179,16 +199,16 @@ impl<M: Material + RenderSlice> RenderSlice for MeshMaterial3d<M> {
 /// a slice is configured. Supports pivot offsets and 9-patch data.
 /// When combined with [`AnimationLayer`](crate::animation::AnimationLayer),
 /// the slice can be animated (frame-specific slice keys).
-#[derive(Component, Reflect, Default, Debug, Clone)]
-#[reflect]
+#[derive(Component, Reflect, Default, Debug, Clone, PartialEq)]
+#[reflect(Component)]
 pub struct AseSlice {
-    pub name: String,
+    pub name: SliceId,
     pub aseprite: Handle<Aseprite>,
 }
 
 impl AseSlice {
     /// Create a new `AseSlice`.
-    pub fn new(aseprite: Handle<Aseprite>, name: impl Into<String>) -> Self {
+    pub fn new(aseprite: Handle<Aseprite>, name: impl Into<SliceId>) -> Self {
         AseSlice {
             name: name.into(),
             aseprite,
@@ -203,7 +223,7 @@ impl AseSlice {
     /// name belong together.
     #[must_use]
     pub fn meta<'a>(&self, aseprites: &'a Assets<Aseprite>) -> Option<&'a SliceMeta> {
-        aseprites.get(&self.aseprite)?.slices.get(&self.name)
+        aseprites.get(&self.aseprite)?.slice(&self.name)
     }
 
     /// The authored size of the slice this component draws.
@@ -220,6 +240,7 @@ impl AseSlice {
     }
 }
 
+#[allow(clippy::type_complexity, reason = "an optional-heavy Bevy query")]
 pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
     mut slices: Query<(
         &mut T,
@@ -256,21 +277,21 @@ pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
         let Some(aseprite) = aseprites.get(&slice.aseprite) else {
             continue;
         };
-        let Some(slice_meta) = aseprite.slices.get(&slice.name) else {
-            #[cfg(debug_assertions)]
-            {
-                let source = slice
+        let Some(slice_meta) = aseprite.slice(&slice.name) else {
+            // An artist typo is the commonest way to reach this, and release
+            // is where nobody can attach a debugger — so warn there too. Once,
+            // not every frame the animation ticks; the formatting only runs on
+            // that first pass.
+            warn_once!(
+                "slice {:?} does not exist in aseprite '{}' (available: {:?})",
+                slice.name.as_str(),
+                slice
                     .aseprite
                     .path()
-                    .map(|p| p.to_string())
-                    .unwrap_or_else(|| format!("<handle {:?}>", slice.aseprite.id()));
-                warn!(
-                    "slice {:?} does not exist in aseprite '{}' (available: {:?})",
-                    slice.name,
-                    source,
-                    aseprite.slices.keys().collect::<Vec<_>>(),
-                );
-            }
+                    .map(|path| path.to_string())
+                    .unwrap_or_else(|| format!("<handle {:?}>", slice.aseprite.id())),
+                aseprite.slices.keys().collect::<Vec<_>>(),
+            );
             continue;
         };
 
