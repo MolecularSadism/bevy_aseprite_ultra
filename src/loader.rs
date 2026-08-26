@@ -1,6 +1,6 @@
 use crate::animation::AnimationDirection;
 use crate::error::AsepriteError;
-use crate::layers::{LayerEntry, LayerId};
+use crate::layers::{LayerEntry, LayerId, SliceId, TagId};
 use aseprite_loader::{
     binary::chunks::layer::LayerType,
     loader::{AsepriteFile, LayerSelection},
@@ -39,18 +39,23 @@ impl Plugin for AsepriteLoaderPlugin {
 #[cfg_attr(feature = "asset_processing", derive(Serialize, Deserialize))]
 pub struct Aseprite {
     /// Read through [`slice`](Self::slice) / [`slices`](Self::slices).
-    pub(crate) slices: HashMap<String, SliceMeta>,
+    pub(crate) slices: HashMap<SliceId, SliceMeta>,
     /// Read through [`tag`](Self::tag) / [`tags`](Self::tags).
-    pub(crate) tags: HashMap<String, TagMeta>,
-    pub frame_durations: Vec<std::time::Duration>,
+    pub(crate) tags: HashMap<TagId, TagMeta>,
+    /// Read through [`frame_durations`](Self::frame_durations).
+    pub(crate) frame_durations: Vec<std::time::Duration>,
+    /// Read through [`atlas_layout`](Self::atlas_layout).
     #[cfg_attr(feature = "asset_processing", serde(skip))]
-    pub atlas_layout: Handle<TextureAtlasLayout>,
+    pub(crate) atlas_layout: Handle<TextureAtlasLayout>,
+    /// Read through [`atlas_image`](Self::atlas_image).
     #[cfg_attr(feature = "asset_processing", serde(skip))]
-    pub atlas_image: Handle<Image>,
-    pub(crate) frame_indicies: Vec<usize>,
+    pub(crate) atlas_image: Handle<Image>,
+    /// Read through [`atlas_index`](Self::atlas_index).
+    pub(crate) frame_indices: Vec<usize>,
     /// The asset path this was loaded from, for constructing sub-asset paths.
+    /// Read through [`source_path`](Self::source_path).
     #[cfg_attr(feature = "asset_processing", serde(skip))]
-    pub source_path: String,
+    pub(crate) source_path: String,
     /// All layers in **front-to-back order** (index 0 = topmost layer in the
     /// Aseprite editor, renders in front), each carrying the layer's
     /// file-defined visibility. Read through [`layer_ids`](Self::layer_ids) /
@@ -69,8 +74,8 @@ impl Aseprite {
     /// vanishing. Returns `None` for an asset with no frames at all.
     #[must_use]
     pub fn atlas_index(&self, frame: usize) -> Option<usize> {
-        let last = self.frame_indicies.len().checked_sub(1)?;
-        Some(self.frame_indicies[frame.min(last)])
+        let last = self.frame_indices.len().checked_sub(1)?;
+        Some(self.frame_indices[frame.min(last)])
     }
 
     /// In-crate shim over [`atlas_index`](Self::atlas_index) for the render
@@ -83,27 +88,68 @@ impl Aseprite {
     /// The named slice, or `None` when this variant defines none by that name.
     ///
     /// Slice names are file-wide, so every sub-asset of a file carries the
-    /// same set; only the atlas positions behind them differ.
+    /// same set; only the atlas positions behind them differ. The map is
+    /// keyed by [`SliceId`], so a caller already holding one — every render
+    /// path does — never touches the string it was interned from.
     #[must_use]
-    pub fn slice(&self, name: &str) -> Option<&SliceMeta> {
-        self.slices.get(name)
+    pub fn slice(&self, name: impl Into<SliceId>) -> Option<&SliceMeta> {
+        self.slices.get(&name.into())
     }
 
-    /// Every slice of this variant, by name, in arbitrary order.
-    pub fn slices(&self) -> impl Iterator<Item = (&str, &SliceMeta)> {
-        self.slices.iter().map(|(name, meta)| (name.as_str(), meta))
+    /// Every slice of this variant, by id, in arbitrary order.
+    pub fn slices(&self) -> impl Iterator<Item = (SliceId, &SliceMeta)> {
+        self.slices.iter().map(|(id, meta)| (*id, meta))
     }
 
     /// The named animation tag, or `None` when the file defines none by that
-    /// name. Tags are file-wide, like slices.
+    /// name. Tags are file-wide, like slices, and keyed the same way: by
+    /// [`TagId`], which is what an animation carries from tick to tick.
     #[must_use]
-    pub fn tag(&self, name: &str) -> Option<&TagMeta> {
-        self.tags.get(name)
+    pub fn tag(&self, name: impl Into<TagId>) -> Option<&TagMeta> {
+        self.tags.get(&name.into())
     }
 
-    /// Every animation tag of the file, by name, in arbitrary order.
-    pub fn tags(&self) -> impl Iterator<Item = (&str, &TagMeta)> {
-        self.tags.iter().map(|(name, meta)| (name.as_str(), meta))
+    /// Every animation tag of the file, by id, in arbitrary order.
+    pub fn tags(&self) -> impl Iterator<Item = (TagId, &TagMeta)> {
+        self.tags.iter().map(|(id, meta)| (*id, meta))
+    }
+
+    /// How long each frame of the file is shown, indexed by absolute frame.
+    ///
+    /// Every variant of a file shares these timings: a layer is drawn from
+    /// the same timeline as the composite it belongs to.
+    #[must_use]
+    pub fn frame_durations(&self) -> &[std::time::Duration] {
+        &self.frame_durations
+    }
+
+    /// The packed atlas layout every variant of this file shares. Index into
+    /// it with [`atlas_index`](Self::atlas_index) or a slice's own atlas
+    /// position.
+    #[must_use]
+    pub fn atlas_layout(&self) -> &Handle<TextureAtlasLayout> {
+        &self.atlas_layout
+    }
+
+    /// The packed atlas texture every variant of this file shares.
+    #[must_use]
+    pub fn atlas_image(&self) -> &Handle<Image> {
+        &self.atlas_image
+    }
+
+    /// The asset path this was loaded from, which sub-asset paths are built
+    /// from. Empty for an [`Aseprite`] assembled by
+    /// [`builder`](Self::builder) rather than loaded from a file.
+    #[must_use]
+    pub fn source_path(&self) -> &str {
+        &self.source_path
+    }
+
+    /// Starts assembling an [`Aseprite`] out of metadata alone, with no file
+    /// behind it.
+    #[must_use]
+    pub fn builder() -> crate::builder::AsepriteBuilder {
+        crate::builder::AsepriteBuilder::new()
     }
 
     /// All layer IDs in front-to-back order.
@@ -501,8 +547,8 @@ impl AssetLoader for AsepriteLoader {
                 .collect()
         };
 
-        let composite_indicies = resolve_indices(&composite_ids)?;
-        let all_indicies = resolve_indices(&all_composite_ids)?;
+        let composite_indices = resolve_indices(&composite_ids)?;
+        let all_indices = resolve_indices(&all_composite_ids)?;
 
         // Pre-resolve per-layer indices while source is still available
         let mut per_layer_resolved: Vec<(LayerId, Vec<usize>)> =
@@ -610,10 +656,10 @@ impl AssetLoader for AsepriteLoader {
         // the packed atlas. A slice's canvas rect is the same across every
         // frame (it's defined once, in canvas coordinates); only the
         // underlying frame image being cropped changes, so this registers one
-        // atlas entry per frame, mirroring `frame_indicies` (see
+        // atlas entry per frame, mirroring `frame_indices` (see
         // `SliceMeta::atlas_id_for_frame`).
         let build_slices =
-            |indices: &[usize], layout: &mut TextureAtlasLayout| -> HashMap<String, SliceMeta> {
+            |indices: &[usize], layout: &mut TextureAtlasLayout| -> HashMap<SliceId, SliceMeta> {
                 raw_slice_data
                     .iter()
                     .map(|raw| {
@@ -629,7 +675,7 @@ impl AssetLoader for AsepriteLoader {
                             })
                             .collect();
                         (
-                            raw.name.clone(),
+                            SliceId::new(&raw.name),
                             SliceMeta {
                                 rect: raw.rect,
                                 atlas_id: frame_atlas_ids.first().copied().unwrap_or_default(),
@@ -643,13 +689,14 @@ impl AssetLoader for AsepriteLoader {
                     .collect()
             };
 
-        let composite_slices = build_slices(&composite_indicies, &mut layout);
-        let all_slices = build_slices(&all_indicies, &mut layout);
+        let composite_slices = build_slices(&composite_indices, &mut layout);
+        let all_slices = build_slices(&all_indices, &mut layout);
 
-        let mut per_layer_data: Vec<(LayerId, Vec<usize>, HashMap<String, SliceMeta>)> = Vec::new();
-        for (layer_id, layer_indicies) in per_layer_resolved {
-            let slices = build_slices(&layer_indicies, &mut layout);
-            per_layer_data.push((layer_id, layer_indicies, slices));
+        let mut per_layer_data: Vec<(LayerId, Vec<usize>, HashMap<SliceId, SliceMeta>)> =
+            Vec::new();
+        for (layer_id, layer_indices) in per_layer_resolved {
+            let slices = build_slices(&layer_indices, &mut layout);
+            per_layer_data.push((layer_id, layer_indices, slices));
         }
 
         // ----------------------------- labeled sub-assets (shared atlas)
@@ -660,7 +707,7 @@ impl AssetLoader for AsepriteLoader {
         let mut tags = HashMap::new();
         raw.tags().iter().for_each(|tag| {
             tags.insert(
-                tag.name.clone(),
+                TagId::new(&tag.name),
                 TagMeta {
                     direction: tag.direction.into(),
                     range: tag.range.clone(),
@@ -679,28 +726,28 @@ impl AssetLoader for AsepriteLoader {
         // ----------------------------- variants (one shape, three uses)
         // Every variant shares the file's tags, frame timings and atlas; only
         // its slice positions and frame indices differ.
-        let variant = |slices: HashMap<String, SliceMeta>, frame_indicies: Vec<usize>| Aseprite {
+        let variant = |slices: HashMap<SliceId, SliceMeta>, frame_indices: Vec<usize>| Aseprite {
             slices,
             tags: tags.clone(),
             frame_durations: frame_durations.clone(),
             atlas_layout: atlas_layout.clone(),
             atlas_image: atlas_image.clone(),
-            frame_indicies,
+            frame_indices,
             source_path: source_path.clone(),
             layers: layer_entries.clone(),
         };
 
-        load_context.add_labeled_asset("all".into(), variant(all_slices, all_indicies));
+        load_context.add_labeled_asset("all".into(), variant(all_slices, all_indices));
 
-        for (layer_id, layer_indicies, layer_slices) in per_layer_data {
+        for (layer_id, layer_indices, layer_slices) in per_layer_data {
             load_context.add_labeled_asset(
                 layer_id.as_str().into(),
-                variant(layer_slices, layer_indicies),
+                variant(layer_slices, layer_indices),
             );
         }
 
         // The default asset: every layer the settings leave visible, composited.
-        Ok(variant(composite_slices, composite_indicies))
+        Ok(variant(composite_slices, composite_indices))
     }
 
     fn extensions(&self) -> &[&str] {

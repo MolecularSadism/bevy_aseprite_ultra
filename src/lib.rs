@@ -5,14 +5,13 @@
 use bevy::prelude::*;
 
 pub(crate) mod animation;
+pub(crate) mod builder;
 pub(crate) mod error;
 pub(crate) mod layers;
 pub(crate) mod loader;
 #[cfg(feature = "asset_processing")]
 pub(crate) mod processor;
 pub(crate) mod slice;
-#[cfg(feature = "testing")]
-pub mod testing;
 
 pub mod prelude {
     pub use crate::AsepriteUltraPlugin;
@@ -22,10 +21,11 @@ pub mod prelude {
         ManualTick, NextFrame, PlayDirection, RenderAnimation, emit_animation_frame_changed,
         render_children_animation, resolve_frame,
     };
+    pub use crate::builder::AsepriteBuilder;
     pub use crate::error::AsepriteError;
     pub use crate::layers::{
         AseFlip, AseRenderTarget, AseTexture, LayerEntry, LayerFilter, LayerId, SliceId,
-        SpriteLayerOf, SpriteLayers,
+        SpriteLayerOf, SpriteLayers, TagId,
     };
     pub use crate::loader::{
         Aseprite, AsepriteLoader, AsepriteLoaderPlugin, AsepriteLoaderSettings, SliceKeyMeta,

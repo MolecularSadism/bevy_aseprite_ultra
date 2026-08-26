@@ -286,11 +286,11 @@ pub fn first_frame_pixels(app: &App, handle: &Handle<Aseprite>) -> Vec<[u8; 4]> 
         .expect("sub-asset loaded");
     let layout = world
         .resource::<Assets<TextureAtlasLayout>>()
-        .get(&aseprite.atlas_layout)
+        .get(aseprite.atlas_layout())
         .expect("atlas layout");
     let image = world
         .resource::<Assets<Image>>()
-        .get(&aseprite.atlas_image)
+        .get(aseprite.atlas_image())
         .expect("atlas image");
     let rect = layout.textures[aseprite.atlas_index(0).expect("sub-asset has frames")];
     let width = image.width();

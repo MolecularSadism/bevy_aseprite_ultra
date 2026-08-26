@@ -1,4 +1,4 @@
-use crate::layers::{AseTexture, SpriteLayerOf};
+use crate::layers::{AseTexture, SpriteLayerOf, TagId};
 use crate::loader::Aseprite;
 use crate::slice::AseSlice;
 use aseprite_loader::binary::chunks::tags::AnimationDirection as RawDirection;
@@ -46,6 +46,7 @@ impl Plugin for AsepriteAnimationPlugin {
         app.register_type::<ManualTick>();
         app.register_type::<NextFrame>();
         app.register_type::<PlayDirection>();
+        app.register_type::<TagId>();
     }
 }
 
@@ -65,9 +66,9 @@ pub trait RenderAnimation {
 impl RenderAnimation for ImageNode {
     type Extra<'e> = ();
     fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, _extra: &mut ()) {
-        self.image = aseprite.atlas_image.clone();
+        self.image = aseprite.atlas_image().clone();
         self.texture_atlas = Some(TextureAtlas {
-            layout: aseprite.atlas_layout.clone(),
+            layout: aseprite.atlas_layout().clone(),
             index: aseprite.get_atlas_index(usize::from(frame)),
         });
     }
@@ -76,9 +77,9 @@ impl RenderAnimation for ImageNode {
 impl RenderAnimation for Sprite {
     type Extra<'e> = ();
     fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, _extra: &mut ()) {
-        self.image = aseprite.atlas_image.clone();
+        self.image = aseprite.atlas_image().clone();
         self.texture_atlas = Some(TextureAtlas {
-            layout: aseprite.atlas_layout.clone(),
+            layout: aseprite.atlas_layout().clone(),
             index: aseprite.get_atlas_index(usize::from(frame)),
         });
     }
@@ -166,13 +167,13 @@ impl AseFrame {
 ///
 /// On entities with [`AseTexture`], the parent's `AseTag` propagates to layer
 /// children that do not have their own (same pattern as [`AseFrame`]).
-#[derive(Component, Reflect, Clone, Debug, PartialEq, Eq)]
+#[derive(Component, Reflect, Clone, Copy, Debug, PartialEq, Eq)]
 #[reflect(Component, Debug, PartialEq)]
-pub struct AseTag(pub String);
+pub struct AseTag(pub TagId);
 
 impl AseTag {
     #[must_use]
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(name: impl Into<TagId>) -> Self {
         AseTag(name.into())
     }
 }
@@ -186,7 +187,7 @@ pub fn resolve_frame(aseprite: &Aseprite, frame: AseFrame, tag: Option<&AseTag>)
     let Some(tag) = tag else {
         return frame.0;
     };
-    let Some(meta) = aseprite.tags.get(&tag.0) else {
+    let Some(meta) = aseprite.tag(tag.0) else {
         return frame.0;
     };
     let start = *meta.range.start();
@@ -215,7 +216,7 @@ pub fn resolve_frame(aseprite: &Aseprite, frame: AseFrame, tag: Option<&AseTag>)
 #[require(AseFrame)]
 #[reflect(Component, Default, Debug)]
 pub struct AseAnimation {
-    pub tag: Option<String>,
+    pub tag: Option<TagId>,
     pub speed: f32,
     pub playing: bool,
     /// Override for repeat behavior. `None` uses the aseprite file's tag repeat
@@ -225,7 +226,7 @@ pub struct AseAnimation {
     pub repeat: Option<AnimationRepeat>,
     /// Overwrite aseprite direction
     pub direction: Option<AnimationDirection>,
-    pub queue: VecDeque<(String, Option<AnimationRepeat>)>,
+    pub queue: VecDeque<(TagId, Option<AnimationRepeat>)>,
     pub hold_relative_frame: bool,
     pub relative_group: u16,
     pub new_relative_group: u16,
@@ -257,7 +258,7 @@ impl Default for AseAnimation {
 impl AseAnimation {
     /// Animation from tag.
     #[must_use]
-    pub fn tag(tag: &str) -> Self {
+    pub fn tag(tag: impl Into<TagId>) -> Self {
         Self::default().with_tag(tag)
     }
 
@@ -277,7 +278,7 @@ impl AseAnimation {
 
     /// Animation with tag.
     #[must_use]
-    pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
+    pub fn with_tag(mut self, tag: impl Into<TagId>) -> Self {
         self.tag = Some(tag.into());
         self
     }
@@ -313,14 +314,14 @@ impl AseAnimation {
     /// Chains an animation after the current one is done. Pass `None` for
     /// repeat to use the file's tag repeat, or `Some(repeat)` to override.
     #[must_use]
-    pub fn with_then(mut self, tag: impl Into<String>, repeat: Option<AnimationRepeat>) -> Self {
+    pub fn with_then(mut self, tag: impl Into<TagId>, repeat: Option<AnimationRepeat>) -> Self {
         self.queue.push_back((tag.into(), repeat));
         self
     }
 
     /// Instantly starts playing a new animation using the file's tag repeat
     /// count. Clears any queued animations and any repeat override.
-    pub fn play(&mut self, tag: impl Into<String>) {
+    pub fn play(&mut self, tag: impl Into<TagId>) {
         self.playing = true;
         self.tag = Some(tag.into());
         self.repeat = None;
@@ -330,7 +331,7 @@ impl AseAnimation {
 
     /// Instantly starts playing a new animation with an explicit repeat
     /// override. Clears any queued animations.
-    pub fn play_with_repeat(&mut self, tag: impl Into<String>, repeat: AnimationRepeat) {
+    pub fn play_with_repeat(&mut self, tag: impl Into<TagId>, repeat: AnimationRepeat) {
         self.playing = true;
         self.tag = Some(tag.into());
         self.repeat = Some(repeat);
@@ -341,7 +342,7 @@ impl AseAnimation {
     /// Instantly starts playing a new animation starting with same relative frame
     /// only if the new relative group is the same as the previous one.
     /// Uses the file's tag repeat count.
-    pub fn play_with_relative_group(&mut self, tag: impl Into<String>, new_relative_group: u16) {
+    pub fn play_with_relative_group(&mut self, tag: impl Into<TagId>, new_relative_group: u16) {
         self.playing = true;
         self.tag = Some(tag.into());
         self.new_relative_group = new_relative_group;
@@ -352,7 +353,7 @@ impl AseAnimation {
 
     /// Instantly starts playing a new looping animation, overriding the file's
     /// repeat count.
-    pub fn play_loop(&mut self, tag: impl Into<String>) {
+    pub fn play_loop(&mut self, tag: impl Into<TagId>) {
         self.playing = true;
         self.tag = Some(tag.into());
         self.repeat = Some(AnimationRepeat::Loop);
@@ -381,7 +382,7 @@ impl AseAnimation {
 
     /// Chains an animation after the current one is done. Pass `None` for
     /// repeat to use the file's tag repeat, or `Some(repeat)` to override.
-    pub fn then(&mut self, tag: impl Into<String>, repeat: Option<AnimationRepeat>) {
+    pub fn then(&mut self, tag: impl Into<TagId>, repeat: Option<AnimationRepeat>) {
         self.queue.push_back((tag.into(), repeat));
     }
 
@@ -512,14 +513,14 @@ pub struct AnimationFrameCursor {
     /// The frame observed on the previous tick, used to detect any change.
     last_frame: u16,
     /// The tag `last_frame` belongs to; a change means a new clip.
-    last_tag: Option<String>,
+    last_tag: Option<TagId>,
 }
 
 impl AnimationFrameCursor {
-    fn new(frame: u16, tag: Option<&str>) -> Self {
+    fn new(frame: u16, tag: Option<TagId>) -> Self {
         Self {
             last_frame: frame,
-            last_tag: tag.map(str::to_owned),
+            last_tag: tag,
         }
     }
 
@@ -531,11 +532,11 @@ impl AnimationFrameCursor {
     /// frame at that point is either stale (asset not yet loaded) or a
     /// deliberately kept carry-over, and is reported later, once the counter
     /// changes again.
-    fn advance(&mut self, current: u16, tag: Option<&str>) -> Option<u16> {
-        let tag_changed = self.last_tag.as_deref() != tag;
+    fn advance(&mut self, current: u16, tag: Option<TagId>) -> Option<u16> {
+        let tag_changed = self.last_tag != tag;
 
         if tag_changed {
-            self.last_tag = tag.map(str::to_owned);
+            self.last_tag = tag;
             self.last_frame = current;
             return (current == 0).then_some(0);
         }
@@ -571,7 +572,7 @@ pub fn emit_animation_frame_changed(
 ) {
     for (entity, state, animation, cursor) in &mut q {
         let current = state.relative_frame;
-        let tag = animation.tag.as_deref();
+        let tag = animation.tag;
 
         // The first frame an entity is seen on is a change from nothing, so it
         // is announced wherever it falls. Testing it against zero announced
@@ -661,7 +662,7 @@ fn resolve_handle<'a>(
 /// A frameless asset yields `0..=0`; the frame lookups downstream skip the
 /// entity rather than index into nothing.
 fn whole_file_range(aseprite: &Aseprite) -> RangeInclusive<u16> {
-    let last = aseprite.frame_durations.len().saturating_sub(1);
+    let last = aseprite.frame_durations().len().saturating_sub(1);
     0..=u16::try_from(last).unwrap_or(u16::MAX)
 }
 
@@ -694,9 +695,9 @@ pub fn update_aseprite_animation(
             continue;
         };
 
-        let tag_meta = animation.tag.as_ref().and_then(|t| aseprite.tags.get(t));
+        let tag_meta = animation.tag.and_then(|t| aseprite.tag(t));
 
-        let range = match (tag_meta, animation.tag.as_deref()) {
+        let range = match (tag_meta, animation.tag) {
             (Some(meta), _) => meta.range.clone(),
             (None, Some(tag)) => {
                 warn_once!("Animation tag \"{tag}\" not found, playing the whole file");
@@ -710,7 +711,7 @@ pub fn update_aseprite_animation(
         // tag-relative on this entity.
         let has_tag = ase_tag.is_some();
         if let Some(tag) = ase_tag.as_deref_mut() {
-            let desired = animation.tag.clone().unwrap_or_default();
+            let desired = animation.tag.unwrap_or_default();
             if tag.0 != desired {
                 tag.0 = desired;
             }
@@ -796,7 +797,8 @@ pub fn update_aseprite_animation(
         } else {
             frame.0
         };
-        let Some(frame_duration) = aseprite.frame_durations.get(usize::from(absolute_frame)) else {
+        let Some(frame_duration) = aseprite.frame_durations().get(usize::from(absolute_frame))
+        else {
             continue;
         };
 
@@ -844,7 +846,7 @@ fn next_frame(
         return;
     };
 
-    let (abs_range, direction) = match anim.tag.as_ref().and_then(|t| aseprite.tags.get(t)) {
+    let (abs_range, direction) = match anim.tag.and_then(|t| aseprite.tag(t)) {
         Some(meta) => {
             let dir = anim.direction.unwrap_or(meta.direction);
             (meta.range.clone(), dir)
@@ -1006,7 +1008,7 @@ mod tests {
     use bevy::platform::collections::HashMap;
 
     /// Minimal in-memory Aseprite asset for tests. The renderer only needs
-    /// `frame_indicies` populated for `get_atlas_index`; everything else can
+    /// `frame_indices` populated for `get_atlas_index`; everything else can
     /// be defaulted.
     fn test_aseprite() -> Aseprite {
         Aseprite {
@@ -1015,7 +1017,7 @@ mod tests {
             frame_durations: vec![Duration::from_millis(100); 4],
             atlas_layout: Handle::<TextureAtlasLayout>::default(),
             atlas_image: Handle::<Image>::default(),
-            frame_indicies: vec![0, 1, 2, 3],
+            frame_indices: vec![0, 1, 2, 3],
             source_path: String::new(),
             layers: vec![],
         }
@@ -1195,7 +1197,7 @@ mod tests {
         use crate::loader::TagMeta;
         let mut ase = test_aseprite();
         ase.tags.insert(
-            "Rock".to_string(),
+            TagId::new("Rock"),
             TagMeta {
                 direction: AnimationDirection::Forward,
                 range: 2..=3,
@@ -1291,22 +1293,102 @@ mod tests {
         assert_eq!(last_frame(&app, child), Some(2));
     }
 
+    // ---------- Tag names are interned ids ----------
+
+    /// Every constructor that names a tag interns it, so a `&str` at the call
+    /// site and a `TagId` held elsewhere address the same animation.
+    #[test]
+    fn tag_names_intern_at_every_constructor() {
+        let walk = TagId::new("walk");
+
+        assert_eq!(AseTag::new("walk"), AseTag(walk));
+        assert_eq!(AseAnimation::tag("walk").tag, Some(walk));
+        assert_eq!(AseAnimation::from("walk").tag, Some(walk));
+        assert_eq!(AseAnimation::default().with_tag(walk).tag, Some(walk));
+
+        let queued = AseAnimation::tag("walk")
+            .with_then("attack", None)
+            .with_then(TagId::new("idle"), Some(AnimationRepeat::Count(2)));
+        assert_eq!(
+            queued.queue.iter().map(|(tag, _)| *tag).collect::<Vec<_>>(),
+            vec![TagId::new("attack"), TagId::new("idle")],
+        );
+    }
+
+    /// The runtime setters intern too, and dequeuing hands the id straight to
+    /// the active tag.
+    #[test]
+    fn playing_and_queueing_carry_the_id() {
+        let mut animation = AseAnimation::default();
+
+        animation.play("walk");
+        assert_eq!(animation.tag, Some(TagId::new("walk")));
+
+        animation.play_loop(TagId::new("run"));
+        assert_eq!(animation.tag, Some(TagId::new("run")));
+
+        animation.then("attack", Some(AnimationRepeat::Count(1)));
+        animation.next();
+        assert_eq!(animation.tag, Some(TagId::new("attack")));
+        assert_eq!(animation.repeat, Some(AnimationRepeat::Count(1)));
+    }
+
+    /// The tick system mirrors the animation's tag onto `AseTag`, which is
+    /// what lets a slice child resolve tag-relative frames.
+    #[test]
+    fn the_ticked_tag_is_mirrored_onto_ase_tag() {
+        let (mut app, handle) = plugin_app(tagged_aseprite(), 120);
+        let entity = app
+            .world_mut()
+            .spawn((
+                AseAnimation::tag("Rock"),
+                AseTag::new("stale"),
+                AnimationLayer::new(handle),
+            ))
+            .id();
+
+        app.update();
+
+        assert_eq!(
+            app.world().get::<AseTag>(entity).map(|tag| tag.0),
+            Some(TagId::new("Rock")),
+        );
+    }
+
+    /// A tag looked up by the id an animation carries finds the same metadata
+    /// the name does — the whole point of keying the map by `TagId`.
+    #[test]
+    fn a_tag_resolves_from_the_id_the_animation_holds() {
+        let aseprite = tagged_aseprite();
+        let animation = AseAnimation::tag("Rock");
+        let tag = animation.tag.expect("the tag that went in");
+
+        assert_eq!(
+            aseprite.tag(tag).map(|meta| meta.range.clone()),
+            Some(2..=3)
+        );
+        assert_eq!(
+            resolve_frame(&aseprite, AseFrame::new(1), Some(&AseTag(tag))),
+            3,
+        );
+    }
+
     // ---------- AnimationFrameChanged ----------
 
     /// A forward step within one tag reports the new frame.
     #[test]
     fn frame_change_forward_progress_reports_frame() {
-        let mut cursor = AnimationFrameCursor::new(0, Some("attack"));
+        let mut cursor = AnimationFrameCursor::new(0, Some("attack".into()));
 
-        assert_eq!(cursor.advance(1, Some("attack")), Some(1));
-        assert_eq!(cursor.advance(2, Some("attack")), Some(2));
+        assert_eq!(cursor.advance(1, Some("attack".into())), Some(1));
+        assert_eq!(cursor.advance(2, Some("attack".into())), Some(2));
     }
 
     /// Staying on the same frame reports nothing.
     #[test]
     fn frame_change_same_frame_reports_nothing() {
-        let mut cursor = AnimationFrameCursor::new(4, Some("attack"));
-        assert_eq!(cursor.advance(4, Some("attack")), None);
+        let mut cursor = AnimationFrameCursor::new(4, Some("attack".into()));
+        assert_eq!(cursor.advance(4, Some("attack".into())), None);
     }
 
     /// A tick that jumps several frames reports the frame now showing, so a
@@ -1314,26 +1396,26 @@ mod tests {
     /// be skipped.
     #[test]
     fn frame_change_jump_reports_new_frame() {
-        let mut cursor = AnimationFrameCursor::new(6, Some("attack"));
+        let mut cursor = AnimationFrameCursor::new(6, Some("attack".into()));
         // A hitch advances the clip 6 -> 13 in one tick; frame 11 sat inside the jump.
-        assert_eq!(cursor.advance(13, Some("attack")), Some(13));
+        assert_eq!(cursor.advance(13, Some("attack".into())), Some(13));
     }
 
     /// A wrap back to 0 within the same tag (a loop's last-frame-to-0) is a
     /// real change and is reported.
     #[test]
     fn frame_change_wrap_to_zero_is_reported() {
-        let mut cursor = AnimationFrameCursor::new(15, Some("attack"));
-        assert_eq!(cursor.advance(0, Some("attack")), Some(0));
+        let mut cursor = AnimationFrameCursor::new(15, Some("attack".into()));
+        assert_eq!(cursor.advance(0, Some("attack".into())), Some(0));
     }
 
     /// Entering a new tag cleanly at frame 0 is reported.
     #[test]
     fn frame_change_tag_entry_at_zero_is_reported() {
-        let mut cursor = AnimationFrameCursor::new(15, Some("attack"));
-        assert_eq!(cursor.advance(0, Some("windup")), Some(0));
+        let mut cursor = AnimationFrameCursor::new(15, Some("attack".into()));
+        assert_eq!(cursor.advance(0, Some("windup".into())), Some(0));
         // The untagged full-clip case counts as its own "tag" too.
-        let mut cursor = AnimationFrameCursor::new(3, Some("attack"));
+        let mut cursor = AnimationFrameCursor::new(3, Some("attack".into()));
         assert_eq!(cursor.advance(0, None), Some(0));
     }
 
@@ -1342,14 +1424,14 @@ mod tests {
     /// normally.
     #[test]
     fn frame_change_stale_tag_change_is_suppressed_until_reset() {
-        let mut cursor = AnimationFrameCursor::new(2, Some("idle"));
+        let mut cursor = AnimationFrameCursor::new(2, Some("idle".into()));
         // Tag has flipped to attack but the counter still shows a leftover frame: suppressed.
-        assert_eq!(cursor.advance(9, Some("attack")), None);
+        assert_eq!(cursor.advance(9, Some("attack".into())), None);
         // A frozen leftover across another tick still reports nothing.
-        assert_eq!(cursor.advance(9, Some("attack")), None);
+        assert_eq!(cursor.advance(9, Some("attack".into())), None);
         // The counter finally resets to 0: reported as a normal change.
-        assert_eq!(cursor.advance(0, Some("attack")), Some(0));
-        assert_eq!(cursor.advance(7, Some("attack")), Some(7));
+        assert_eq!(cursor.advance(0, Some("attack".into())), Some(0));
+        assert_eq!(cursor.advance(7, Some("attack".into())), Some(7));
     }
 
     /// End-to-end through the emitter system: cursor is inserted lazily, frame
@@ -1566,9 +1648,9 @@ mod tests {
         use crate::loader::TagMeta;
         let mut ase = test_aseprite();
         ase.frame_durations = vec![Duration::from_millis(100); 8];
-        ase.frame_indicies = vec![0, 1, 2, 3, 4, 5, 6, 7];
+        ase.frame_indices = vec![0, 1, 2, 3, 4, 5, 6, 7];
         ase.tags.insert(
-            "walk".to_string(),
+            TagId::new("walk"),
             TagMeta {
                 direction: AnimationDirection::Forward,
                 range: 2..=7,
@@ -1694,9 +1776,9 @@ mod tests {
         for (name, start, end) in [("solo", 0u16, 0u16), ("pair", 5u16, 6u16)] {
             let mut ase = test_aseprite();
             ase.frame_durations = vec![Duration::from_millis(100); 10];
-            ase.frame_indicies = (0..10).collect();
+            ase.frame_indices = (0..10).collect();
             ase.tags.insert(
-                name.to_string(),
+                TagId::new(name),
                 TagMeta {
                     direction: AnimationDirection::PingPong,
                     range: start..=end,
@@ -1722,7 +1804,7 @@ mod tests {
 
         let mut ase = test_aseprite();
         ase.tags.insert(
-            "overrun".to_string(),
+            TagId::new("overrun"),
             TagMeta {
                 direction: AnimationDirection::Forward,
                 range: 2..=9,
@@ -1730,7 +1812,7 @@ mod tests {
             },
         );
         ase.tags.insert(
-            "walk".to_string(),
+            TagId::new("walk"),
             TagMeta {
                 direction: AnimationDirection::Forward,
                 range: 0..=3,
@@ -1853,9 +1935,9 @@ mod tests {
         for (name, start, end) in [("zero", 0u16, 3u16), ("offset", 5u16, 9u16)] {
             let mut ase = test_aseprite();
             ase.frame_durations = vec![Duration::from_millis(100); 10];
-            ase.frame_indicies = (0..10).collect();
+            ase.frame_indices = (0..10).collect();
             ase.tags.insert(
-                name.to_string(),
+                TagId::new(name),
                 TagMeta {
                     direction: AnimationDirection::PingPong,
                     range: start..=end,
@@ -1896,9 +1978,9 @@ mod tests {
 
         let mut ase = test_aseprite();
         ase.frame_durations = vec![Duration::from_millis(100); 4];
-        ase.frame_indicies = (0..4).collect();
+        ase.frame_indices = (0..4).collect();
         ase.tags.insert(
-            "bounce".to_string(),
+            TagId::new("bounce"),
             TagMeta {
                 direction: AnimationDirection::PingPongReverse,
                 range: 0..=3,
@@ -1930,9 +2012,9 @@ mod tests {
 
         let mut ase = test_aseprite();
         ase.frame_durations = vec![Duration::from_millis(100); 10];
-        ase.frame_indicies = (0..10).collect();
+        ase.frame_indices = (0..10).collect();
         ase.tags.insert(
-            "bounce".to_string(),
+            TagId::new("bounce"),
             TagMeta {
                 direction: AnimationDirection::PingPongReverse,
                 range: 5..=9,
@@ -1972,9 +2054,9 @@ mod tests {
             // example spawns.
             let mut ase = test_aseprite();
             ase.frame_durations = vec![Duration::from_millis(100); 10];
-            ase.frame_indicies = (0..10).collect();
+            ase.frame_indices = (0..10).collect();
             ase.tags.insert(
-                name.to_string(),
+                TagId::new(name),
                 TagMeta {
                     direction: AnimationDirection::Reverse,
                     range: start..=end,

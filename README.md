@@ -34,7 +34,7 @@ rendering, and custom materials.
 - **Baked rendering** — single composite child for simpler use cases
 - Render to custom materials and write shaders on top
 - Optional asset processor for production builds
-- Optional in-memory fixtures for testing against sheet metadata
+- Build an `Aseprite` from metadata alone, with no file behind it
 
 ## Quick Start
 
@@ -269,7 +269,7 @@ fn size_to_slice(mut nodes: Query<(&mut Node, &AseSlice)>, aseprites: Res<Assets
     for (mut node, slice) in &mut nodes {
         let Some(meta) = aseprites
             .get(&slice.aseprite)
-            .and_then(|aseprite| aseprite.slice(&slice.name))
+            .and_then(|aseprite| aseprite.slice(slice.name))
         else {
             continue;
         };
@@ -520,16 +520,33 @@ cmd.spawn((
 Implement `RenderAnimation` or `RenderSlice` on your material to drive
 custom shaders with aseprite data:
 
-```rust,ignore
+```rust
+# use bevy::prelude::*;
+# use bevy_aseprite_ultra::prelude::*;
+#[derive(Default)]
+struct MyMaterial {
+    image: Handle<Image>,
+    texture_min: Vec2,
+    texture_max: Vec2,
+}
+
 impl RenderAnimation for MyMaterial {
-    type Extra<'e> = (Res<'e, Time>, Res<'e, Assets<TextureAtlasLayout>>);
+    type Extra<'e> = Res<'e, Assets<TextureAtlasLayout>>;
     fn render_animation(
         &mut self,
         aseprite: &Aseprite,
-        state: &AnimationState,
+        frame: u16,
         extra: &mut Self::Extra<'_>,
     ) {
-        // custom rendering logic
+        let Some(layout) = extra.get(aseprite.atlas_layout()) else {
+            return;
+        };
+        let Some(index) = aseprite.atlas_index(usize::from(frame)) else {
+            return;
+        };
+        self.image = aseprite.atlas_image().clone();
+        self.texture_min = layout.textures[index].min.as_vec2();
+        self.texture_max = layout.textures[index].max.as_vec2();
     }
 }
 ```
@@ -584,30 +601,26 @@ cargo run --features asset_processing
 
 Then load your aseprite files in code as usual!
 
-## Testing Fixtures
+## Building an Aseprite from Metadata
 
-Enable the `testing` feature to build an `Aseprite` from metadata alone — slice
-rects, layer names, tag ranges — for tests that would otherwise need a file on
-disk:
+`Aseprite::builder()` assembles an asset from metadata alone — slice rects,
+layer names, tag ranges — for tests, examples and benches that would otherwise
+need a file on disk:
 
-```toml
-[dev-dependencies]
-bevy_aseprite_ultra = { version = "0.11", features = ["testing"] }
-```
-
-```text
+```rust
 use bevy::prelude::*;
 use bevy_aseprite_ultra::prelude::*;
-use bevy_aseprite_ultra::testing::AsepriteFixture;
 
-let aseprite = AsepriteFixture::new()
+let aseprite = Aseprite::builder()
     .with_layer("Body", true)
     .with_layer("Hat", false)
     .with_slice("Panel", Rect::new(0.0, 0.0, 16.0, 16.0), 0)
     .with_tag("walk", 2..=5)
     .build();
+
+assert_eq!(aseprite.visible_layer_ids().count(), 1);
 ```
 
-The atlas handles a fixture leaves behind are `Handle::default()`, so nothing
-draws through one; a test asserting on rendered pixels wants a real file through
-the asset loader.
+Only the loader pairs metadata with pixels, so the atlas handles a built asset
+leaves behind are `Handle::default()` and nothing draws through one; anything
+asserting on rendered pixels wants a real file through the asset loader.

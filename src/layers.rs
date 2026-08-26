@@ -29,6 +29,7 @@ impl Plugin for AsepriteLayersPlugin {
             .register_type::<LayerFilter>()
             .register_type::<LayerId>()
             .register_type::<SliceId>()
+            .register_type::<TagId>()
             .register_type::<SpriteLayerOf>()
             .register_type::<SpriteLayers>();
         // `LayerId` gets its reflect impls from the `InternedId` derive, which
@@ -82,6 +83,10 @@ impl LayerEntry {
 /// Type-safe interned slice name. O(1) comparisons, `Copy`.
 #[derive(InternedId, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SliceId(bevy::ecs::intern::Interned<str>);
+
+/// Type-safe interned animation-tag name. O(1) comparisons, `Copy`.
+#[derive(InternedId, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct TagId(bevy::ecs::intern::Interned<str>);
 
 /// Selects which layers are visible. All layers are always spawned as children;
 /// this filter only controls which children have [`Visibility::Inherited`] vs
@@ -652,7 +657,7 @@ fn propagate_render_layers(
 /// If a slice name is requested but missing from this aseprite, falls back
 /// to frame 0 — `render_slice` will emit its own warning at runtime.
 fn initial_atlas(ase: &Aseprite, slice: Option<SliceId>) -> (usize, Option<TextureSlicer>) {
-    let Some(meta) = slice.and_then(|id| ase.slice(&id)) else {
+    let Some(meta) = slice.and_then(|id| ase.slice(id)) else {
         return (ase.get_atlas_index(0), None);
     };
     let slicer = meta.border().map(|border| TextureSlicer {
@@ -786,8 +791,8 @@ fn spawn_children(
             ChildSpec {
                 name: Name::new("baked"),
                 layer: None,
-                image: aseprite.atlas_image.clone(),
-                layout: aseprite.atlas_layout.clone(),
+                image: aseprite.atlas_image().clone(),
+                layout: aseprite.atlas_layout().clone(),
                 index,
                 slicer,
                 z: 0,
@@ -802,7 +807,7 @@ fn spawn_children(
     for entry in &aseprite.layers {
         let layer_id = entry.id;
         let layer_handle: Handle<Aseprite> =
-            server.load(format!("{}#{}", aseprite.source_path, layer_id.as_str()));
+            server.load(format!("{}#{}", aseprite.source_path(), layer_id.as_str()));
 
         // Per-layer sub-assets load lazily on first `server.load` request, so
         // they are typically not yet in `Assets<Aseprite>` here. Fall back to
@@ -821,8 +826,8 @@ fn spawn_children(
             ChildSpec {
                 name: Name::new(layer_id.as_str()),
                 layer: Some(layer_id),
-                image: layer_ase.atlas_image.clone(),
-                layout: layer_ase.atlas_layout.clone(),
+                image: layer_ase.atlas_image().clone(),
+                layout: layer_ase.atlas_layout().clone(),
                 index,
                 slicer,
                 z: plan.z(layer_id),

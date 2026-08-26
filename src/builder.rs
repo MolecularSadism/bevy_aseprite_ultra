@@ -1,34 +1,28 @@
-//! In-memory [`Aseprite`] fixtures for tests that need sheet metadata but no
-//! pixels.
-//!
-//! Gated behind the `testing` feature, which is off by default. This module
-//! is the crate's one public surface outside
-//! [`prelude`](crate::prelude): a consumer opts into it from a test target
-//! rather than picking it up with everything else.
+//! Assembles an [`Aseprite`] out of slice, layer and tag metadata, with no
+//! file behind it.
 
 use crate::animation::AnimationDirection;
-use crate::layers::{LayerEntry, LayerId};
+use crate::layers::{LayerEntry, LayerId, SliceId, TagId};
 use crate::loader::{Aseprite, SliceMeta, TagMeta};
 use bevy::prelude::*;
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
-/// Builds an [`Aseprite`] out of slice, layer and tag metadata, with no file
-/// behind it.
+/// Builds an [`Aseprite`]'s metadata: its slices, layers, tags and frame
+/// timings.
 ///
-/// Only the asset loader can pair metadata with pixels, so the atlas handles
-/// a fixture leaves behind are [`Handle::default`]: they address no texture,
-/// and anything rendering through them draws nothing. A test asserting on
-/// geometry, layer order or tag ranges wants a fixture; a test asserting on
-/// rendered output wants a real file loaded through
-/// [`AsepriteLoader`](crate::prelude::AsepriteLoader).
+/// Only the asset loader pairs that metadata with pixels, so the atlas
+/// handles a builder leaves behind are [`Handle::default`]: they address no
+/// texture, and anything rendering through them draws nothing. Code asserting
+/// on geometry, layer order or tag ranges — a test, an example, a bench —
+/// wants a built asset; anything asserting on rendered output wants a real
+/// file loaded through [`AsepriteLoader`](crate::prelude::AsepriteLoader).
 ///
 /// ```
 /// # use bevy::prelude::*;
 /// use bevy_aseprite_ultra::prelude::*;
-/// use bevy_aseprite_ultra::testing::AsepriteFixture;
 ///
-/// let aseprite = AsepriteFixture::new()
+/// let aseprite = Aseprite::builder()
 ///     .with_layer("Body", true)
 ///     .with_layer("Hat", false)
 ///     .with_slice("Panel", Rect::new(0.0, 0.0, 16.0, 16.0), 0)
@@ -39,17 +33,17 @@ use std::time::Duration;
 /// assert_eq!(aseprite.slice("Panel").map(SliceMeta::size), Some(Vec2::splat(16.0)));
 /// ```
 #[derive(Debug, Default, Clone)]
-pub struct AsepriteFixture {
+pub struct AsepriteBuilder {
     aseprite: Aseprite,
 }
 
-impl AsepriteFixture {
-    /// An empty fixture: no slices, layers, tags or frames.
+impl AsepriteBuilder {
+    /// An empty builder: no slices, layers, tags or frames.
     ///
     /// ```
-    /// use bevy_aseprite_ultra::testing::AsepriteFixture;
+    /// use bevy_aseprite_ultra::prelude::*;
     ///
-    /// let aseprite = AsepriteFixture::new().build();
+    /// let aseprite = AsepriteBuilder::new().build();
     /// assert_eq!(aseprite.layer_ids().count(), 0);
     /// ```
     #[must_use]
@@ -62,16 +56,16 @@ impl AsepriteFixture {
     ///
     /// ```
     /// # use bevy::prelude::*;
-    /// use bevy_aseprite_ultra::testing::AsepriteFixture;
+    /// use bevy_aseprite_ultra::prelude::*;
     ///
-    /// let aseprite = AsepriteFixture::new()
+    /// let aseprite = Aseprite::builder()
     ///     .with_slice("Icon", Rect::new(2.0, 2.0, 10.0, 10.0), 3)
     ///     .build();
     ///
     /// assert_eq!(aseprite.slice("Icon").map(|slice| slice.atlas_id), Some(3));
     /// ```
     #[must_use]
-    pub fn with_slice(self, name: impl Into<String>, rect: Rect, atlas_id: usize) -> Self {
+    pub fn with_slice(self, name: impl Into<SliceId>, rect: Rect, atlas_id: usize) -> Self {
         self.with_slice_meta(name, slice_meta(rect, atlas_id))
     }
 
@@ -82,9 +76,9 @@ impl AsepriteFixture {
     ///
     /// ```
     /// # use bevy::prelude::*;
-    /// use bevy_aseprite_ultra::testing::AsepriteFixture;
+    /// use bevy_aseprite_ultra::prelude::*;
     ///
-    /// let aseprite = AsepriteFixture::new()
+    /// let aseprite = Aseprite::builder()
     ///     .with_nine_patch_slice(
     ///         "Frame",
     ///         Rect::new(0.0, 0.0, 12.0, 12.0),
@@ -96,7 +90,7 @@ impl AsepriteFixture {
     /// assert_eq!(border.map(|border| border.min_inset), Some(Vec2::splat(4.0)));
     /// ```
     #[must_use]
-    pub fn with_nine_patch_slice(self, name: impl Into<String>, rect: Rect, centre: Vec4) -> Self {
+    pub fn with_nine_patch_slice(self, name: impl Into<SliceId>, rect: Rect, centre: Vec4) -> Self {
         self.with_slice_meta(
             name,
             SliceMeta {
@@ -112,9 +106,8 @@ impl AsepriteFixture {
     /// ```
     /// # use bevy::prelude::*;
     /// use bevy_aseprite_ultra::prelude::*;
-    /// use bevy_aseprite_ultra::testing::AsepriteFixture;
     ///
-    /// let aseprite = AsepriteFixture::new()
+    /// let aseprite = Aseprite::builder()
     ///     .with_slice_meta(
     ///         "Head",
     ///         SliceMeta {
@@ -131,7 +124,7 @@ impl AsepriteFixture {
     /// assert_eq!(aseprite.slice("Head").map(|slice| slice.atlas_id_for_frame(1)), Some(1));
     /// ```
     #[must_use]
-    pub fn with_slice_meta(mut self, name: impl Into<String>, meta: SliceMeta) -> Self {
+    pub fn with_slice_meta(mut self, name: impl Into<SliceId>, meta: SliceMeta) -> Self {
         self.aseprite.slices.insert(name.into(), meta);
         self
     }
@@ -143,9 +136,8 @@ impl AsepriteFixture {
     ///
     /// ```
     /// use bevy_aseprite_ultra::prelude::*;
-    /// use bevy_aseprite_ultra::testing::AsepriteFixture;
     ///
-    /// let aseprite = AsepriteFixture::new()
+    /// let aseprite = Aseprite::builder()
     ///     .with_layer("Hat", true)
     ///     .with_layer("Body", true)
     ///     .build();
@@ -156,10 +148,10 @@ impl AsepriteFixture {
     /// );
     /// ```
     #[must_use]
-    pub fn with_layer(mut self, name: &str, visible: bool) -> Self {
+    pub fn with_layer(mut self, name: impl Into<LayerId>, visible: bool) -> Self {
         self.aseprite
             .layers
-            .push(LayerEntry::new(LayerId::new(name), visible));
+            .push(LayerEntry::new(name.into(), visible));
         self
     }
 
@@ -168,14 +160,14 @@ impl AsepriteFixture {
     /// unless the entity overrides it.
     ///
     /// ```
-    /// use bevy_aseprite_ultra::testing::AsepriteFixture;
+    /// use bevy_aseprite_ultra::prelude::*;
     ///
-    /// let aseprite = AsepriteFixture::new().with_tag("idle", 0..=3).build();
+    /// let aseprite = Aseprite::builder().with_tag("idle", 0..=3).build();
     ///
     /// assert_eq!(aseprite.tag("idle").map(|tag| tag.range.clone()), Some(0..=3));
     /// ```
     #[must_use]
-    pub fn with_tag(self, name: impl Into<String>, range: RangeInclusive<u16>) -> Self {
+    pub fn with_tag(self, name: impl Into<TagId>, range: RangeInclusive<u16>) -> Self {
         self.with_tag_meta(
             name,
             TagMeta {
@@ -191,9 +183,8 @@ impl AsepriteFixture {
     ///
     /// ```
     /// use bevy_aseprite_ultra::prelude::*;
-    /// use bevy_aseprite_ultra::testing::AsepriteFixture;
     ///
-    /// let aseprite = AsepriteFixture::new()
+    /// let aseprite = Aseprite::builder()
     ///     .with_tag_meta(
     ///         "swing",
     ///         TagMeta {
@@ -207,7 +198,7 @@ impl AsepriteFixture {
     /// assert_eq!(aseprite.tag("swing").map(|tag| tag.repeat), Some(2));
     /// ```
     #[must_use]
-    pub fn with_tag_meta(mut self, name: impl Into<String>, meta: TagMeta) -> Self {
+    pub fn with_tag_meta(mut self, name: impl Into<TagId>, meta: TagMeta) -> Self {
         self.aseprite.tags.insert(name.into(), meta);
         self
     }
@@ -215,14 +206,14 @@ impl AsepriteFixture {
     /// Sets how long each frame of the file is shown.
     ///
     /// ```
-    /// use bevy_aseprite_ultra::testing::AsepriteFixture;
+    /// use bevy_aseprite_ultra::prelude::*;
     /// use std::time::Duration;
     ///
-    /// let aseprite = AsepriteFixture::new()
+    /// let aseprite = Aseprite::builder()
     ///     .with_frame_durations([Duration::from_millis(100); 2])
     ///     .build();
     ///
-    /// assert_eq!(aseprite.frame_durations.len(), 2);
+    /// assert_eq!(aseprite.frame_durations().len(), 2);
     /// ```
     #[must_use]
     pub fn with_frame_durations(mut self, durations: impl IntoIterator<Item = Duration>) -> Self {
@@ -234,27 +225,27 @@ impl AsepriteFixture {
     /// what [`Aseprite::atlas_index`] reads.
     ///
     /// ```
-    /// use bevy_aseprite_ultra::testing::AsepriteFixture;
+    /// use bevy_aseprite_ultra::prelude::*;
     ///
-    /// let aseprite = AsepriteFixture::new().with_frame_indicies([4, 5, 6]).build();
+    /// let aseprite = Aseprite::builder().with_frame_indices([4, 5, 6]).build();
     ///
     /// assert_eq!(aseprite.atlas_index(1), Some(5));
     /// ```
     #[must_use]
-    pub fn with_frame_indicies(mut self, indicies: impl IntoIterator<Item = usize>) -> Self {
-        self.aseprite.frame_indicies = indicies.into_iter().collect();
+    pub fn with_frame_indices(mut self, indices: impl IntoIterator<Item = usize>) -> Self {
+        self.aseprite.frame_indices = indices.into_iter().collect();
         self
     }
 
-    /// Sets the asset path the fixture reports as its origin, which sub-asset
-    /// paths are built from.
+    /// Sets the asset path the built asset reports as its origin, which
+    /// sub-asset paths are built from.
     ///
     /// ```
-    /// use bevy_aseprite_ultra::testing::AsepriteFixture;
+    /// use bevy_aseprite_ultra::prelude::*;
     ///
-    /// let aseprite = AsepriteFixture::new().with_source_path("player.aseprite").build();
+    /// let aseprite = Aseprite::builder().with_source_path("player.aseprite").build();
     ///
-    /// assert_eq!(aseprite.source_path, "player.aseprite");
+    /// assert_eq!(aseprite.source_path(), "player.aseprite");
     /// ```
     #[must_use]
     pub fn with_source_path(mut self, path: impl Into<String>) -> Self {
@@ -267,10 +258,9 @@ impl AsepriteFixture {
     /// ```
     /// # use bevy::prelude::*;
     /// use bevy_aseprite_ultra::prelude::*;
-    /// use bevy_aseprite_ultra::testing::AsepriteFixture;
     ///
     /// let mut assets = Assets::<Aseprite>::default();
-    /// let handle = assets.add(AsepriteFixture::new().with_layer("Body", true).build());
+    /// let handle = assets.add(Aseprite::builder().with_layer("Body", true).build());
     ///
     /// assert!(assets.get(&handle).is_some());
     /// ```
@@ -301,7 +291,7 @@ mod tests {
 
     #[test]
     fn slices_come_back_out_by_name() {
-        let aseprite = AsepriteFixture::new()
+        let aseprite = Aseprite::builder()
             .with_slice("Panel", Rect::new(0.0, 0.0, 16.0, 8.0), 2)
             .with_slice("Icon", Rect::new(0.0, 0.0, 4.0, 4.0), 7)
             .build();
@@ -312,14 +302,32 @@ mod tests {
         assert_eq!(panel.border(), None);
         assert_eq!(panel.atlas_id_for_frame(3), 2);
 
-        let mut names: Vec<&str> = aseprite.slices().map(|(name, _)| name).collect();
+        let mut names: Vec<&str> = aseprite.slices().map(|(id, _)| id.as_str()).collect();
         names.sort_unstable();
         assert_eq!(names, vec!["Icon", "Panel"]);
     }
 
+    /// The id a caller already holds is the key, so a lookup by `SliceId`
+    /// hashes the id itself rather than the string it was interned from.
+    #[test]
+    fn slices_come_back_out_by_id() {
+        let aseprite = Aseprite::builder()
+            .with_slice(SliceId::new("Panel"), Rect::new(0.0, 0.0, 16.0, 8.0), 2)
+            .build();
+
+        assert_eq!(
+            aseprite.slice(SliceId::new("Panel")).map(|s| s.atlas_id),
+            Some(2),
+        );
+        assert_eq!(
+            aseprite.slices().map(|(id, _)| id).collect::<Vec<_>>(),
+            vec![SliceId::new("Panel")],
+        );
+    }
+
     #[test]
     fn a_nine_patch_centre_becomes_border_insets() {
-        let aseprite = AsepriteFixture::new()
+        let aseprite = Aseprite::builder()
             .with_nine_patch_slice(
                 "Frame",
                 Rect::new(0.0, 0.0, 12.0, 10.0),
@@ -337,7 +345,7 @@ mod tests {
 
     #[test]
     fn layers_keep_their_order_and_visibility() {
-        let aseprite = AsepriteFixture::new()
+        let aseprite = Aseprite::builder()
             .with_layer("Hat", true)
             .with_layer("Body", false)
             .with_layer("Shadow", true)
@@ -359,7 +367,7 @@ mod tests {
 
     #[test]
     fn tags_default_to_forward_playback() {
-        let aseprite = AsepriteFixture::new()
+        let aseprite = Aseprite::builder()
             .with_tag("walk", 2..=5)
             .with_tag_meta(
                 "swing",
@@ -382,20 +390,54 @@ mod tests {
         assert_eq!(aseprite.tags().count(), 2);
     }
 
+    /// A tag comes back out under the id an animation carries, without
+    /// rebuilding the name it was interned from.
+    #[test]
+    fn tags_come_back_out_by_id() {
+        let aseprite = Aseprite::builder()
+            .with_tag(TagId::new("walk"), 2..=5)
+            .build();
+
+        assert_eq!(
+            aseprite
+                .tag(TagId::new("walk"))
+                .map(|tag| tag.range.clone()),
+            Some(2..=5),
+        );
+        assert_eq!(
+            aseprite.tags().map(|(id, _)| id).collect::<Vec<_>>(),
+            vec![TagId::new("walk")],
+        );
+    }
+
     #[test]
     fn frames_and_source_path_survive_the_build() {
-        let aseprite = AsepriteFixture::new()
+        let aseprite = Aseprite::builder()
             .with_frame_durations([Duration::from_millis(50), Duration::from_millis(120)])
-            .with_frame_indicies([4, 5])
+            .with_frame_indices([4, 5])
             .with_source_path("player.aseprite")
             .build();
 
         assert_eq!(
-            aseprite.frame_durations,
-            vec![Duration::from_millis(50), Duration::from_millis(120)]
+            aseprite.frame_durations(),
+            [Duration::from_millis(50), Duration::from_millis(120)]
         );
         assert_eq!(aseprite.atlas_index(0), Some(4));
         assert_eq!(aseprite.atlas_index(9), Some(5), "frames clamp to the last");
-        assert_eq!(aseprite.source_path, "player.aseprite");
+        assert_eq!(aseprite.source_path(), "player.aseprite");
+    }
+
+    /// The atlas handles a built asset carries address no texture, which is
+    /// the one thing separating it from a loaded file.
+    #[test]
+    fn the_atlas_handles_address_nothing() {
+        let aseprite = Aseprite::builder().build();
+
+        assert_eq!(aseprite.atlas_image(), &Handle::<Image>::default());
+        assert_eq!(
+            aseprite.atlas_layout(),
+            &Handle::<TextureAtlasLayout>::default()
+        );
+        assert_eq!(aseprite.source_path(), "");
     }
 }
