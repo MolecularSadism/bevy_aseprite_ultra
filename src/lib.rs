@@ -21,7 +21,7 @@ pub mod prelude {
         render_children_animation, resolve_frame,
     };
     pub use crate::layers::{
-        AseFlip, AseTexture, LayerEntry, LayerFilter, LayerId, RenderTarget, SliceId,
+        AseFlip, AseRenderTarget, AseTexture, LayerEntry, LayerFilter, LayerId, SliceId,
         SpriteLayerOf, SpriteLayers,
     };
     pub use crate::loader::{Aseprite, AsepriteLoaderPlugin, AsepriteLoaderSettings, SliceMeta};

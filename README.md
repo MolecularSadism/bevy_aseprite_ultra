@@ -367,16 +367,17 @@ fn toggle_armor(
 }
 ```
 
-When using `LayerFilter::Include`, you can also use `toggle_layer_on` /
-`toggle_layer_off` on `AseTexture`:
+When using `LayerFilter::Include`, you can also use `show_layer` /
+`hide_layer` on `AseTexture`. Both return `false` under any other filter,
+where there is no include list to edit:
 
 ```rust
 # use bevy::prelude::*;
 # use bevy_aseprite_ultra::prelude::*;
 fn toggle_armor(mut query: Query<&mut AseTexture>) {
     for mut tex in &mut query {
-        tex.toggle_layer_on(LayerId::new("armor"));
-        tex.toggle_layer_off(LayerId::new("helmet"));
+        tex.show_layer(LayerId::new("armor"));
+        tex.hide_layer(LayerId::new("helmet"));
     }
 }
 ```
@@ -395,19 +396,17 @@ fn swap_layers(
     assets: Res<Assets<Aseprite>>,
 ) {
     for mut tex in &mut query {
-        // Initialise from asset defaults on first use
-        if let Some(aseprite) = assets.get(&tex.aseprite) {
-            tex.init_layer_order_from(aseprite);
-        }
-
-        // Set a custom front-to-back order
+        // Set a custom front-to-back order outright
         tex.layer_order = Some(vec![
             LayerId::new("swoosh"),
             LayerId::new("body"),
         ]);
 
-        // Or move a single layer with reorder_layer
-        tex.reorder_layer(LayerId::new("hat"), 0); // move to front
+        // Or move one layer; the override is seeded from the asset's own
+        // order the first time one is needed.
+        if let Some(aseprite) = assets.get(&tex.aseprite) {
+            tex.reorder_layer(aseprite, LayerId::new("hat"), 0); // move to front
+        }
     }
 }
 ```
