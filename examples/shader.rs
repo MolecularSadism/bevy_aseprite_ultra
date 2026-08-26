@@ -127,14 +127,14 @@ fn setup(
 #[derive(Component)]
 pub struct SliceCycle {
     current: usize,
-    slices: Vec<String>,
+    slices: Vec<SliceId>,
 }
 
 fn change_slice(mut slices: Query<(&mut AseSlice, &mut SliceCycle)>) {
     slices.iter_mut().for_each(|(mut slice, mut cycle)| {
         cycle.current += 1;
         let index = cycle.current % cycle.slices.len();
-        slice.name = cycle.slices[index].clone();
+        slice.name = cycle.slices[index];
         info!("slice changed to {}", slice.name);
     });
 }
