@@ -204,13 +204,13 @@ Listen for one-shot animation completions or loop cycles:
 ```rust
 # use bevy::prelude::*;
 # use bevy_aseprite_ultra::prelude::*;
-fn despawn_on_finish(mut events: MessageReader<AnimationEvents>, mut cmd: Commands) {
+fn despawn_on_finish(mut events: MessageReader<AnimationEvent>, mut cmd: Commands) {
     for event in events.read() {
         match event {
-            AnimationEvents::Finished(entity) => {
+            AnimationEvent::Finished(entity) => {
                 cmd.entity(*entity).despawn();
             }
-            AnimationEvents::LoopCycleFinished(_) => {}
+            AnimationEvent::LoopCycleFinished(_) => {}
         }
     }
 }
@@ -234,7 +234,7 @@ cmd.spawn((
 # fn advance(mut cmd: Commands, query: Query<Entity, With<ManualTick>>) {
 // Trigger to advance one frame:
 for entity in &query {
-    cmd.trigger(NextFrameEvent(entity));
+    cmd.trigger(NextFrame { entity });
 }
 # }
 ```

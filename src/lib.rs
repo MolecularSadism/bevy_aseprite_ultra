@@ -15,9 +15,9 @@ pub(crate) mod slice;
 pub mod prelude {
     pub use crate::AsepriteUltraPlugin;
     pub use crate::animation::{
-        AnimationDirection, AnimationEvents, AnimationFrameChanged, AnimationFrameCursor,
+        AnimationDirection, AnimationEvent, AnimationFrameChanged, AnimationFrameCursor,
         AnimationLayer, AnimationRepeat, AnimationState, AseAnimation, AseFrame, AseTag,
-        ManualTick, NextFrameEvent, PlayDirection, RenderAnimation, emit_animation_frame_changed,
+        ManualTick, NextFrame, PlayDirection, RenderAnimation, emit_animation_frame_changed,
         render_children_animation, resolve_frame,
     };
     pub use crate::layers::{
