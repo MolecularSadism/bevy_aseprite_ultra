@@ -31,6 +31,8 @@ fn update_frame(
     inputs: Res<ButtonInput<MouseButton>>,
 ) {
     if inputs.just_pressed(MouseButton::Left) {
-        cmd.trigger(NextFrameEvent(*animation_entity));
+        cmd.trigger(NextFrame {
+            entity: *animation_entity,
+        });
     }
 }
