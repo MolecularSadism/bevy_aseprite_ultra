@@ -46,7 +46,7 @@ fn atlas_pixel_data(app: &App, handle: &Handle<Aseprite>) -> Vec<u8> {
         .resource::<Assets<Aseprite>>()
         .get(handle)
         .unwrap()
-        .atlas_image
+        .atlas_image()
         .clone();
     world
         .resource::<Assets<Image>>()
@@ -69,13 +69,13 @@ fn composite_frame_pixel_data(app: &App, handle: &Handle<Aseprite>, frame: usize
     let atlas_index = ase.atlas_index(frame).expect("composite has frames");
     let layout = world
         .resource::<Assets<TextureAtlasLayout>>()
-        .get(&ase.atlas_layout)
+        .get(ase.atlas_layout())
         .unwrap();
     let rect = layout.textures[atlas_index];
 
     let image = world
         .resource::<Assets<Image>>()
-        .get(&ase.atlas_image)
+        .get(ase.atlas_image())
         .unwrap();
     let data = image.data.as_ref().unwrap();
     let atlas_width = image.texture_descriptor.size.width as usize;

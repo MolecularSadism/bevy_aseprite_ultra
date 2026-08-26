@@ -93,7 +93,7 @@ impl Plugin for AsepriteSlicePlugin {
 ///         slice_meta: &SliceMeta,
 ///         extra: &mut Self::Extra<'_>,
 ///     ) {
-///         self.image = aseprite.atlas_image.clone();
+///         self.image = aseprite.atlas_image().clone();
 ///         self.texture_min = slice_meta.rect.min.as_uvec2();
 ///         self.texture_max = slice_meta.rect.max.as_uvec2();
 ///         self.time = extra.elapsed_secs();
@@ -114,9 +114,9 @@ pub trait RenderSlice {
 impl RenderSlice for ImageNode {
     type Extra<'e> = ();
     fn render_slice(&mut self, aseprite: &Aseprite, slice_meta: &SliceMeta, _extra: &mut ()) {
-        self.image = aseprite.atlas_image.clone();
+        self.image = aseprite.atlas_image().clone();
         self.texture_atlas = Some(TextureAtlas {
-            layout: aseprite.atlas_layout.clone(),
+            layout: aseprite.atlas_layout().clone(),
             index: slice_meta.atlas_id,
         });
         if let Some(border) = slice_meta.border() {
@@ -132,9 +132,9 @@ impl RenderSlice for ImageNode {
 impl RenderSlice for Sprite {
     type Extra<'e> = ();
     fn render_slice(&mut self, aseprite: &Aseprite, slice_meta: &SliceMeta, _extra: &mut ()) {
-        self.image = aseprite.atlas_image.clone();
+        self.image = aseprite.atlas_image().clone();
         self.texture_atlas = Some(TextureAtlas {
-            layout: aseprite.atlas_layout.clone(),
+            layout: aseprite.atlas_layout().clone(),
             index: slice_meta.atlas_id,
         });
         if let Some(border) = slice_meta.border() {
@@ -223,7 +223,7 @@ impl AseSlice {
     /// name belong together.
     #[must_use]
     pub fn meta<'a>(&self, aseprites: &'a Assets<Aseprite>) -> Option<&'a SliceMeta> {
-        aseprites.get(&self.aseprite)?.slice(&self.name)
+        aseprites.get(&self.aseprite)?.slice(self.name)
     }
 
     /// The authored size of the slice this component draws.
@@ -277,7 +277,7 @@ pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
         let Some(aseprite) = aseprites.get(&slice.aseprite) else {
             continue;
         };
-        let Some(slice_meta) = aseprite.slice(&slice.name) else {
+        let Some(slice_meta) = aseprite.slice(slice.name) else {
             // An artist typo is the commonest way to reach this, and release
             // is where nobody can attach a debugger — so warn there too. Once,
             // not every frame the animation ticks; the formatting only runs on
@@ -290,7 +290,10 @@ pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
                     .path()
                     .map(|path| path.to_string())
                     .unwrap_or_else(|| format!("<handle {:?}>", slice.aseprite.id())),
-                aseprite.slices.keys().collect::<Vec<_>>(),
+                aseprite
+                    .slices()
+                    .map(|(id, _)| id.as_str())
+                    .collect::<Vec<_>>(),
             );
             continue;
         };

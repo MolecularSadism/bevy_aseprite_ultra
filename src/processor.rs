@@ -242,31 +242,38 @@ impl AssetLoader for ProcessedAsepriteLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{layers::LayerEntry, loader::SliceMeta, prelude::LayerId};
+    use crate::{
+        loader::{SliceMeta, TagMeta},
+        prelude::{AnimationDirection, LayerId, SliceId, TagId},
+    };
 
     /// An aseprite as the loader hands it over: layers, slices, frames — all
     /// of it state the cache has to carry, none of it recoverable at load.
     fn sample() -> Aseprite {
-        let mut aseprite = Aseprite {
-            layers: vec![
-                LayerEntry::new(LayerId::new("top"), true),
-                LayerEntry::new(LayerId::new("bottom"), false),
-            ],
-            frame_indicies: vec![0, 1],
-            ..default()
-        };
-        aseprite.slices.insert(
-            "Panel".into(),
-            SliceMeta {
-                rect: Rect::new(0.0, 0.0, 4.0, 4.0),
-                atlas_id: 0,
-                pivot: None,
-                nine_patch: None,
-                keys: Vec::new(),
-                frame_atlas_ids: vec![0, 1],
-            },
-        );
-        aseprite
+        Aseprite::builder()
+            .with_layer("top", true)
+            .with_layer("bottom", false)
+            .with_frame_indices([0, 1])
+            .with_slice_meta(
+                "Panel",
+                SliceMeta {
+                    rect: Rect::new(0.0, 0.0, 4.0, 4.0),
+                    atlas_id: 0,
+                    pivot: None,
+                    nine_patch: None,
+                    keys: Vec::new(),
+                    frame_atlas_ids: vec![0, 1],
+                },
+            )
+            .with_tag_meta(
+                "Swing",
+                TagMeta {
+                    direction: AnimationDirection::PingPongReverse,
+                    range: 0..=1,
+                    repeat: 2,
+                },
+            )
+            .build()
     }
 
     #[test]
@@ -289,7 +296,35 @@ mod tests {
             read_back.root.visible_layer_ids().collect::<Vec<_>>(),
             vec![LayerId::new("top")]
         );
-        assert!(read_back.root.slice("Panel").is_some());
+        // Slices and tags are keyed by their interned ids, which the cache
+        // carries as the names they were interned from; a key that came back
+        // as anything else would miss both of these lookups.
+        let slice = read_back
+            .root
+            .slice(SliceId::new("Panel"))
+            .expect("the slice is kept");
+        assert_eq!(slice.rect, Rect::new(0.0, 0.0, 4.0, 4.0));
+        assert_eq!(slice.frame_atlas_ids, vec![0, 1]);
+        assert_eq!(
+            read_back
+                .root
+                .slices()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+            vec![SliceId::new("Panel")],
+        );
+
+        let tag = read_back
+            .root
+            .tag(TagId::new("Swing"))
+            .expect("the tag is kept");
+        assert_eq!(tag.direction, AnimationDirection::PingPongReverse);
+        assert_eq!(tag.range, 0..=1);
+        assert_eq!(tag.repeat, 2);
+        assert_eq!(
+            read_back.root.tags().map(|(id, _)| id).collect::<Vec<_>>(),
+            vec![TagId::new("Swing")],
+        );
 
         let (label, variant) = read_back.variants.first().expect("the sub-asset is kept");
         assert_eq!(label, "all");

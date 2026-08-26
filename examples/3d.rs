@@ -52,10 +52,10 @@ impl Material for MyMaterial {
 impl RenderAnimation for MyMaterial {
     type Extra<'e> = (Res<'e, Time>, Res<'e, Assets<TextureAtlasLayout>>);
     fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, extra: &mut Self::Extra<'_>) {
-        let Some(atlas_layout) = extra.1.get(&aseprite.atlas_layout) else {
+        let Some(atlas_layout) = extra.1.get(aseprite.atlas_layout()) else {
             return;
         };
-        self.image = aseprite.atlas_image.clone();
+        self.image = aseprite.atlas_image().clone();
         let Some(index) = aseprite.atlas_index(usize::from(frame)) else {
             return;
         };
@@ -73,7 +73,7 @@ impl RenderSlice for MyMaterial {
         slice_meta: &SliceMeta,
         extra: &mut Self::Extra<'_>,
     ) {
-        self.image = aseprite.atlas_image.clone();
+        self.image = aseprite.atlas_image().clone();
         self.texture_min = slice_meta.rect.min.as_uvec2();
         self.texture_max = slice_meta.rect.max.as_uvec2();
         self.time = extra.elapsed_secs();
