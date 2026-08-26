@@ -7,6 +7,8 @@ description = "A Bevy plugin for directly loading spritesheets and animations fr
 keywords = ["bevy", "aseprite", "atlas", "loader", "animation"]
 repository = "https://github.com/Lommix/bevy_aseprite_ultra.git"
 license = "MIT"
+rust-version = "1.85"
+categories = ["game-development", "asset-management"]
 readme = "README.md"
 
 [dependencies]

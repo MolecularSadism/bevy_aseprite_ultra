@@ -31,7 +31,10 @@ pub mod prelude {
 /// The main plugin. Add this to your [`App`] to enable aseprite loading,
 /// animation, slices, and layered rendering.
 ///
-/// ```rust
+/// Compiled but not run: `DefaultPlugins` builds a winit event loop, which
+/// needs a display.
+///
+/// ```rust,no_run
 /// # use bevy::prelude::*;
 /// # use bevy_aseprite_ultra::prelude::*;
 /// fn main() {
