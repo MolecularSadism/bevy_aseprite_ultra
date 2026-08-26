@@ -12,7 +12,7 @@ fn main() {
         .run();
 }
 
-fn setup<'a>(mut cmd: Commands, server: Res<AssetServer>) {
+fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn((Camera2d, Transform::default().with_scale(Vec3::splat(0.15))));
 
     cmd.spawn((
@@ -24,11 +24,11 @@ fn setup<'a>(mut cmd: Commands, server: Res<AssetServer>) {
     ));
 }
 
-fn events(mut events: MessageReader<AnimationEvents>, mut cmd: Commands) {
+fn events(mut events: MessageReader<AnimationEvent>, mut cmd: Commands) {
     for event in events.read() {
         match event {
-            AnimationEvents::Finished(entity) => cmd.entity(*entity).despawn(),
-            AnimationEvents::LoopCycleFinished(_entity) => (),
+            AnimationEvent::Finished(entity) => cmd.entity(*entity).despawn(),
+            AnimationEvent::LoopCycleFinished(_entity) => (),
         };
     }
 }

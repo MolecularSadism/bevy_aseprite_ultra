@@ -9,7 +9,7 @@ rendering, and custom materials.
 
 | Bevy Version | Plugin Version |
 | -----------: | -------------: |
-|         0.18 |         0.10.0 |
+|         0.18 |         0.11.0 |
 |         0.17 |          0.7.0 |
 |         0.16 |          0.6.1 |
 |         0.15 |          0.4.1 |
@@ -204,13 +204,13 @@ Listen for one-shot animation completions or loop cycles:
 ```rust
 # use bevy::prelude::*;
 # use bevy_aseprite_ultra::prelude::*;
-fn despawn_on_finish(mut events: MessageReader<AnimationEvents>, mut cmd: Commands) {
+fn despawn_on_finish(mut events: MessageReader<AnimationEvent>, mut cmd: Commands) {
     for event in events.read() {
         match event {
-            AnimationEvents::Finished(entity) => {
+            AnimationEvent::Finished(entity) => {
                 cmd.entity(*entity).despawn();
             }
-            AnimationEvents::LoopCycleFinished(_) => {}
+            AnimationEvent::LoopCycleFinished(_) => {}
         }
     }
 }
@@ -234,7 +234,7 @@ cmd.spawn((
 # fn advance(mut cmd: Commands, query: Query<Entity, With<ManualTick>>) {
 // Trigger to advance one frame:
 for entity in &query {
-    cmd.trigger(NextFrameEvent(entity));
+    cmd.trigger(NextFrame { entity });
 }
 # }
 ```
@@ -253,6 +253,32 @@ cmd.spawn(
         .sprite(),
 );
 # }
+```
+
+### Slice Geometry
+
+A slice knows the size it was authored at and, when the artist drew a
+nine-patch centre, the insets that centre implies — so a node can size itself
+to the art instead of hard-coding it:
+
+```rust
+# use bevy::prelude::*;
+# use bevy_aseprite_ultra::prelude::*;
+fn size_to_slice(mut nodes: Query<(&mut Node, &AseSlice)>, aseprites: Res<Assets<Aseprite>>) {
+    for (mut node, slice) in &mut nodes {
+        let Some(meta) = aseprites
+            .get(&slice.aseprite)
+            .and_then(|aseprite| aseprite.slice(&slice.name))
+        else {
+            continue;
+        };
+        let size = meta.size();
+        node.width = Val::Px(size.x);
+        node.height = Val::Px(size.y);
+        // `None` unless the slice carries a nine-patch centre.
+        let _insets = meta.border();
+    }
+}
 ```
 
 ### Runtime Slice Switching
@@ -341,16 +367,17 @@ fn toggle_armor(
 }
 ```
 
-When using `LayerFilter::Include`, you can also use `toggle_layer_on` /
-`toggle_layer_off` on `AseTexture`:
+When using `LayerFilter::Include`, you can also use `show_layer` /
+`hide_layer` on `AseTexture`. Both return `false` under any other filter,
+where there is no include list to edit:
 
 ```rust
 # use bevy::prelude::*;
 # use bevy_aseprite_ultra::prelude::*;
 fn toggle_armor(mut query: Query<&mut AseTexture>) {
     for mut tex in &mut query {
-        tex.toggle_layer_on(LayerId::new("armor"));
-        tex.toggle_layer_off(LayerId::new("helmet"));
+        tex.show_layer(LayerId::new("armor"));
+        tex.hide_layer(LayerId::new("helmet"));
     }
 }
 ```
@@ -369,35 +396,25 @@ fn swap_layers(
     assets: Res<Assets<Aseprite>>,
 ) {
     for mut tex in &mut query {
-        // Initialise from asset defaults on first use
-        if let Some(aseprite) = assets.get(&tex.aseprite) {
-            tex.init_layer_order_from(aseprite);
-        }
-
-        // Set a custom front-to-back order
+        // Set a custom front-to-back order outright
         tex.layer_order = Some(vec![
             LayerId::new("swoosh"),
             LayerId::new("body"),
         ]);
 
-        // Or move a single layer with reorder_layer
-        tex.reorder_layer(LayerId::new("hat"), 0); // move to front
+        // Or move one layer; the override is seeded from the asset's own
+        // order the first time one is needed.
+        if let Some(aseprite) = assets.get(&tex.aseprite) {
+            tex.reorder_layer(aseprite, LayerId::new("hat"), 0); // move to front
+        }
     }
 }
 ```
 
-To modify the order globally on the asset itself (affecting all entities
-that use it), use `Aseprite::reorder_layer`:
-
-```rust
-# use bevy::prelude::*;
-# use bevy_aseprite_ultra::prelude::*;
-fn reorder_on_asset(mut assets: ResMut<Assets<Aseprite>>) {
-    for (_, aseprite) in assets.iter_mut() {
-        aseprite.reorder_layer(LayerId::new("swoosh"), 0); // move to front
-    }
-}
-```
+Order and visibility are per entity. The asset carries the order the file
+was authored with, and each `AseTexture` overrides it for itself — there is
+no asset-level mutator, because nothing re-reads the asset once an entity
+has spawned its layer children.
 
 You can also set `layer_order` at spawn time via the builder:
 

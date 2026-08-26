@@ -1,7 +1,6 @@
 use crate::layers::{AseTexture, SpriteLayerOf};
 use crate::loader::Aseprite;
 use crate::slice::AseSlice;
-use anyhow::Context;
 use aseprite_loader::binary::chunks::tags::AnimationDirection as RawDirection;
 use bevy::{
     app::{App, Plugin, PostUpdate, PreUpdate},
@@ -12,12 +11,12 @@ use bevy::{
     sprite_render::Material2d,
     ui::{UiSystems, widget::ImageNode},
 };
-use std::{collections::VecDeque, time::Duration};
+use std::{collections::VecDeque, ops::RangeInclusive, time::Duration};
 
 pub struct AsepriteAnimationPlugin;
 impl Plugin for AsepriteAnimationPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<AnimationEvents>();
+        app.add_message::<AnimationEvent>();
         app.add_message::<AnimationFrameChanged>();
         app.add_systems(PreUpdate, update_aseprite_animation);
         app.add_systems(
@@ -35,19 +34,24 @@ impl Plugin for AsepriteAnimationPlugin {
         app.add_observer(next_frame);
 
         app.register_type::<AseAnimation>();
-        app.register_type::<AnimationState>();
+        app.register_type::<AnimationDirection>();
+        app.register_type::<AnimationEvent>();
         app.register_type::<AnimationFrameChanged>();
         app.register_type::<AnimationFrameCursor>();
+        app.register_type::<AnimationLayer>();
+        app.register_type::<AnimationRepeat>();
+        app.register_type::<AnimationState>();
         app.register_type::<AseFrame>();
         app.register_type::<AseTag>();
+        app.register_type::<ManualTick>();
+        app.register_type::<NextFrame>();
         app.register_type::<PlayDirection>();
-        app.register_type::<AnimationRepeat>();
     }
 }
 
 /// Any component that implements this trait can be used as a render target for
 /// aseprite frames. The plugin ships with implementations for [`Sprite`],
-/// [`ImageNode`], [`MeshMaterial2d`], and [`MaterialNode`] (plus [`MeshMaterial3d`]
+/// [`ImageNode`], [`MeshMaterial2d`], and [`MaterialNode`] (plus `MeshMaterial3d`
 /// with the `3d` feature).
 ///
 /// Implement this trait on your own material to drive custom shaders from the
@@ -122,17 +126,14 @@ impl<M: Material + RenderAnimation> RenderAnimation for MeshMaterial3d<M> {
 /// children each carry their own `AseFrame`; the parent's frame is copied to
 /// children that lack their own [`AseAnimation`] driver, so per-layer animation
 /// works by attaching `AseAnimation` to a specific layer child.
-#[derive(Component, Default, Reflect, Clone, Copy, Debug)]
-#[reflect]
+#[derive(Component, Default, Reflect, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[reflect(Component, Default, Debug, PartialEq)]
 pub struct AseFrame(pub u16);
 
 impl AseFrame {
+    #[must_use]
     pub fn new(frame: u16) -> Self {
         AseFrame(frame)
-    }
-
-    pub fn get(&self) -> u16 {
-        self.0
     }
 }
 
@@ -165,17 +166,14 @@ impl AseFrame {
 ///
 /// On entities with [`AseTexture`], the parent's `AseTag` propagates to layer
 /// children that do not have their own (same pattern as [`AseFrame`]).
-#[derive(Component, Reflect, Clone, Debug)]
-#[reflect]
+#[derive(Component, Reflect, Clone, Debug, PartialEq, Eq)]
+#[reflect(Component, Debug, PartialEq)]
 pub struct AseTag(pub String);
 
 impl AseTag {
+    #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         AseTag(name.into())
-    }
-
-    pub fn get(&self) -> &str {
-        &self.0
     }
 }
 
@@ -215,7 +213,7 @@ pub fn resolve_frame(aseprite: &Aseprite, frame: AseFrame, tag: Option<&AseTag>)
 #[derive(Component, Debug, Clone, Reflect)]
 #[require(AnimationState)]
 #[require(AseFrame)]
-#[reflect]
+#[reflect(Component, Default, Debug)]
 pub struct AseAnimation {
     pub tag: Option<String>,
     pub speed: f32,
@@ -258,23 +256,27 @@ impl Default for AseAnimation {
 
 impl AseAnimation {
     /// Animation from tag.
+    #[must_use]
     pub fn tag(tag: &str) -> Self {
         Self::default().with_tag(tag)
     }
 
     /// Animation speed multiplier, default is 1.0.
+    #[must_use]
     pub fn with_speed(mut self, speed: f32) -> Self {
         self.speed = speed;
         self
     }
 
     /// Animation holds relative frame when tag changes, default is false.
+    #[must_use]
     pub fn with_relative_frame_hold(mut self, hold_relative_frame: bool) -> Self {
         self.hold_relative_frame = hold_relative_frame;
         self
     }
 
     /// Animation with tag.
+    #[must_use]
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
         self.tag = Some(tag.into());
         self
@@ -285,6 +287,7 @@ impl AseAnimation {
     /// `AnimationRepeat::Count(n)` to play exactly `n` times.
     /// The override persists across tag changes until cleared with
     /// [`use_file_repeat`](Self::use_file_repeat).
+    #[must_use]
     pub fn with_repeat(mut self, repeat: AnimationRepeat) -> Self {
         self.repeat = Some(repeat);
         self.needs_repeat_init = true;
@@ -293,6 +296,7 @@ impl AseAnimation {
 
     /// Clears the repeat override so the animation uses the aseprite file's
     /// tag repeat count.
+    #[must_use]
     pub fn use_file_repeat(mut self) -> Self {
         self.repeat = None;
         self.needs_repeat_init = true;
@@ -300,6 +304,7 @@ impl AseAnimation {
     }
 
     /// Provides an animation direction, overwrites aseprite direction.
+    #[must_use]
     pub fn with_direction(mut self, direction: AnimationDirection) -> Self {
         self.direction = Some(direction);
         self
@@ -307,6 +312,7 @@ impl AseAnimation {
 
     /// Chains an animation after the current one is done. Pass `None` for
     /// repeat to use the file's tag repeat, or `Some(repeat)` to override.
+    #[must_use]
     pub fn with_then(mut self, tag: impl Into<String>, repeat: Option<AnimationRepeat>) -> Self {
         self.queue.push_back((tag.into(), repeat));
         self
@@ -408,7 +414,7 @@ impl From<&str> for AseAnimation {
 /// Can also be used standalone with [`AseAnimation`] for custom material
 /// rendering without the parent-child model.
 #[derive(Component, Default, Reflect, Clone, Debug)]
-#[reflect]
+#[reflect(Component, Default, Debug)]
 pub struct AnimationLayer {
     pub aseprite: Handle<Aseprite>,
 }
@@ -422,9 +428,10 @@ impl AnimationLayer {
 /// Marker component that disables automatic animation ticking.
 ///
 /// When present, the plugin will not advance frames automatically.
-/// Use [`NextFrameEvent`] to manually advance frames, or modify
+/// Use [`NextFrame`] to manually advance frames, or modify
 /// [`AnimationState`] directly.
-#[derive(Component)]
+#[derive(Component, Reflect, Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[reflect(Component, Default, Debug, PartialEq)]
 pub struct ManualTick;
 
 /// Tracks per-animation internal state (relative frame within the active tag,
@@ -433,36 +440,29 @@ pub struct ManualTick;
 /// The authoritative "current frame index into the asset" lives on
 /// [`AseFrame`], not here. This struct is only meaningful for entities driven
 /// by [`AseAnimation`]; reading it on a manually-set frame is a no-op.
-#[derive(Component, Debug, Default, Reflect)]
-#[reflect]
+#[derive(Component, Debug, Default, Clone, PartialEq, Eq, Reflect)]
+#[reflect(Component, Default, Debug, PartialEq)]
 pub struct AnimationState {
     pub relative_frame: u16,
     pub elapsed: std::time::Duration,
     pub current_direction: PlayDirection,
 }
 
-#[allow(unused)]
-impl AnimationState {
-    pub fn relative_frame(&self) -> u16 {
-        self.relative_frame
-    }
-}
-
 /// The current playback direction within a ping-pong animation.
-#[derive(Default, Debug, Reflect)]
-#[reflect]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Reflect)]
+#[reflect(Default, Debug, PartialEq)]
 pub enum PlayDirection {
     #[default]
     Forward,
     Backward,
 }
 
-/// Events emitted by the animation system.
+/// Completion signals broadcast by the animation system.
 ///
-/// Use `EventReader<AnimationEvents>` to react to animation completions.
-#[derive(Message, Debug, Reflect)]
-#[reflect]
-pub enum AnimationEvents {
+/// Read with `MessageReader<AnimationEvent>`.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq, Reflect)]
+#[reflect(Debug, PartialEq)]
+pub enum AnimationEvent {
     Finished(Entity),
     LoopCycleFinished(Entity),
 }
@@ -470,7 +470,7 @@ pub enum AnimationEvents {
 /// Emitted whenever an entity's displayed animation frame changes; `frame` is
 /// the tag-relative frame now showing.
 ///
-/// [`AnimationEvents`] only signals completions; this message gives per-frame
+/// [`AnimationEvent`] only signals completions; this message gives per-frame
 /// granularity (footstep frames, attack cast points). It fires on every change
 /// of [`AnimationState::relative_frame`] — a step in either direction, a wrap
 /// at either end (loop, clip restart, ping-pong bounce), or a multi-frame
@@ -489,8 +489,8 @@ pub enum AnimationEvents {
 /// displayed, but its entry into the new tag is not announced; reporting
 /// resumes with the next change. Consequently a `frame >= N` consumer fires
 /// one tick late when a tag entry lands exactly on `N`.
-#[derive(Message, Debug, Clone, Copy, Reflect)]
-#[reflect]
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq, Reflect)]
+#[reflect(Debug, PartialEq)]
 pub struct AnimationFrameChanged {
     pub entity: Entity,
     pub frame: u16,
@@ -552,8 +552,8 @@ impl AnimationFrameCursor {
 /// Maintains each animated entity's [`AnimationFrameCursor`] and emits
 /// [`AnimationFrameChanged`] whenever the displayed frame changes.
 ///
-/// Runs in [`PreUpdate`] after [`update_aseprite_animation`] (with a sync
-/// point in between), so frame advances — including [`NextFrameEvent`]-driven
+/// Runs in [`PreUpdate`] after `update_aseprite_animation` (with a sync
+/// point in between), so frame advances — including [`NextFrame`]-driven
 /// ones — are reported in the same tick they happen. A cursor is inserted
 /// lazily on first sight, reporting the initial frame when it is a clean `0`.
 /// Within a tag every change is reported; across a tag change only a clean
@@ -573,12 +573,17 @@ pub fn emit_animation_frame_changed(
         let current = state.relative_frame;
         let tag = animation.tag.as_deref();
 
+        // The first frame an entity is seen on is a change from nothing, so it
+        // is announced wherever it falls. Testing it against zero announced
+        // only animations that happen to open on their first frame, and a
+        // reversed one opens on its last.
         let Some(mut cursor) = cursor else {
             cmd.entity(entity)
                 .insert(AnimationFrameCursor::new(current, tag));
-            if current == 0 {
-                writer.write(AnimationFrameChanged { entity, frame: 0 });
-            }
+            writer.write(AnimationFrameChanged {
+                entity,
+                frame: current,
+            });
             continue;
         };
 
@@ -589,8 +594,8 @@ pub fn emit_animation_frame_changed(
 }
 
 /// Playback direction for an animation.
-#[derive(Default, Clone, Reflect, Debug)]
-#[reflect]
+#[derive(Default, Clone, Copy, PartialEq, Eq, Reflect, Debug)]
+#[reflect(Default, Debug, PartialEq)]
 pub enum AnimationDirection {
     #[default]
     Forward,
@@ -606,14 +611,17 @@ impl From<RawDirection> for AnimationDirection {
             RawDirection::Reverse => AnimationDirection::Reverse,
             RawDirection::PingPong => AnimationDirection::PingPong,
             RawDirection::PingPongReverse => AnimationDirection::PingPongReverse,
-            _ => panic!("Invalid AnimationDirection"),
+            unknown => {
+                warn!("Unhandled aseprite animation direction {unknown:?}, playing forward");
+                AnimationDirection::Forward
+            }
         }
     }
 }
 
 /// How many times an animation should play.
-#[derive(Default, Debug, Clone, Reflect)]
-#[reflect]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Reflect)]
+#[reflect(Default, Debug, PartialEq)]
 pub enum AnimationRepeat {
     /// Play indefinitely.
     #[default]
@@ -644,9 +652,19 @@ fn resolve_handle<'a>(
         .or_else(|| layer.map(|l| &l.aseprite))
 }
 
+/// The whole file as a frame range, used whenever no tag narrows playback.
+///
+/// A frameless asset yields `0..=0`; the frame lookups downstream skip the
+/// entity rather than index into nothing.
+fn whole_file_range(aseprite: &Aseprite) -> RangeInclusive<u16> {
+    let last = aseprite.frame_durations.len().saturating_sub(1);
+    0..=u16::try_from(last).unwrap_or(u16::MAX)
+}
+
 /// Ticks animation state on entities with [`AseAnimation`].
 /// Works for both parent entities (with [`AseTexture`]) and standalone
 /// entities (with [`AnimationLayer`], e.g. for custom materials).
+#[allow(clippy::type_complexity)]
 pub fn update_aseprite_animation(
     mut cmd: Commands,
     mut animations: Query<(
@@ -661,7 +679,7 @@ pub fn update_aseprite_animation(
     )>,
     aseprites: Res<Assets<Aseprite>>,
     time: Res<Time>,
-) -> Result<(), BevyError> {
+) {
     for (entity, mut animation, mut state, mut frame, mut ase_tag, tex, layer, is_manual) in
         animations.iter_mut()
     {
@@ -672,17 +690,15 @@ pub fn update_aseprite_animation(
             continue;
         };
 
-        let tag_meta = animation
-            .tag
-            .as_ref()
-            .map(|t| aseprite.tags.get(t))
-            .flatten();
+        let tag_meta = animation.tag.as_ref().and_then(|t| aseprite.tags.get(t));
 
-        let range = match animation.tag.as_ref() {
-            Some(tag) => tag_meta.map(|meta| meta.range.clone()).context(format!(
-                "Animation tag \"{tag}\" not found in aseprite file",
-            ))?,
-            None => 0..=(aseprite.frame_durations.len() as u16 - 1),
+        let range = match (tag_meta, animation.tag.as_deref()) {
+            (Some(meta), _) => meta.range.clone(),
+            (None, Some(tag)) => {
+                warn_once!("Animation tag \"{tag}\" not found, playing the whole file");
+                whole_file_range(aseprite)
+            }
+            (None, None) => whole_file_range(aseprite),
         };
 
         // Mirror the animation's tag into AseTag (when present) so the renderer
@@ -698,11 +714,23 @@ pub fn update_aseprite_animation(
 
         // Working range/index: absolute when no AseTag, relative when AseTag is present.
         let (lo, hi) = if has_tag {
-            (0, range.end() - range.start())
+            (0, range.end().saturating_sub(*range.start()))
         } else {
             (*range.start(), *range.end())
         };
         let working_range = lo..=hi;
+
+        // Where playback enters the range, and which way it leaves: a reversed
+        // direction opens at the far end walking down, which is the only thing
+        // separating `PingPongReverse` from `PingPong`.
+        let direction = animation.direction.unwrap_or_else(|| {
+            tag_meta.map_or(AnimationDirection::Forward, |m| m.direction.into())
+        });
+        let opens_backward = matches!(
+            direction,
+            AnimationDirection::Reverse | AnimationDirection::PingPongReverse
+        );
+        let entry = if opens_backward { hi } else { lo };
 
         // Resolve remaining_cycles from override or file when needed.
         // remaining_cycles counts how many more times the animation will restart
@@ -716,25 +744,34 @@ pub fn update_aseprite_animation(
                     _ => None,
                 },
             };
+            state.current_direction = if opens_backward {
+                PlayDirection::Backward
+            } else {
+                PlayDirection::Forward
+            };
+            if opens_backward {
+                frame.0 = entry;
+                state.relative_frame = hi.saturating_sub(lo);
+            }
             animation.needs_repeat_init = false;
         }
 
         if !working_range.contains(&frame.0) {
             if !animation.hold_relative_frame {
-                frame.0 = lo;
-                state.relative_frame = 0;
+                frame.0 = entry;
+                state.relative_frame = hi.saturating_sub(lo) * u16::from(opens_backward);
                 animation.relative_group = 0;
                 animation.new_relative_group = 0;
             } else {
                 if animation.new_relative_group != animation.relative_group {
                     animation.relative_group = animation.new_relative_group;
-                    frame.0 = lo;
-                    state.relative_frame = 0;
+                    frame.0 = entry;
+                    state.relative_frame = hi.saturating_sub(lo) * u16::from(opens_backward);
                     state.elapsed = std::time::Duration::ZERO;
                 } else {
-                    let span = hi - lo + 1;
-                    state.relative_frame = state.relative_frame % span;
-                    frame.0 = lo + state.relative_frame;
+                    let span = hi.saturating_sub(lo).saturating_add(1);
+                    state.relative_frame %= span;
+                    frame.0 = lo.saturating_add(state.relative_frame);
                 }
             }
         }
@@ -751,32 +788,35 @@ pub fn update_aseprite_animation(
 
         // frame_durations is indexed by absolute frame.
         let absolute_frame = if has_tag {
-            range.start() + frame.0
+            range.start().saturating_add(frame.0)
         } else {
             frame.0
         };
         let Some(frame_duration) = aseprite.frame_durations.get(usize::from(absolute_frame)) else {
-            return Ok(());
+            continue;
         };
 
         if state.elapsed > *frame_duration {
-            cmd.trigger(NextFrameEvent(entity));
+            cmd.trigger(NextFrame { entity });
             state.elapsed =
                 Duration::from_secs_f32(state.elapsed.as_secs_f32() % frame_duration.as_secs_f32());
         }
     }
-    Ok(())
 }
 
 /// Trigger this event to manually advance an animation by one frame.
 ///
 /// Used together with [`ManualTick`] for frame-by-frame control.
-#[derive(Event)]
-pub struct NextFrameEvent(pub Entity);
+#[derive(EntityEvent, Debug, Clone, Copy, PartialEq, Eq, Reflect)]
+#[reflect(Debug, PartialEq)]
+pub struct NextFrame {
+    pub entity: Entity,
+}
 
+#[allow(clippy::type_complexity)]
 fn next_frame(
-    trigger: On<NextFrameEvent>,
-    mut events: MessageWriter<AnimationEvents>,
+    trigger: On<NextFrame>,
+    mut events: MessageWriter<AnimationEvent>,
     mut animations: Query<(
         &mut AnimationState,
         &mut AseFrame,
@@ -787,7 +827,8 @@ fn next_frame(
     )>,
     aseprites: Res<Assets<Aseprite>>,
 ) {
-    let Ok((mut state, mut frame, mut anim, has_tag, tex, layer)) = animations.get_mut(trigger.0)
+    let entity = trigger.entity;
+    let Ok((mut state, mut frame, mut anim, has_tag, tex, layer)) = animations.get_mut(entity)
     else {
         return;
     };
@@ -799,27 +840,23 @@ fn next_frame(
         return;
     };
 
-    let (abs_range, direction) = match anim.tag.as_ref().map(|t| aseprite.tags.get(t)).flatten() {
+    let (abs_range, direction) = match anim.tag.as_ref().and_then(|t| aseprite.tags.get(t)) {
         Some(meta) => {
             let dir = anim
                 .direction
-                .clone()
-                .unwrap_or(AnimationDirection::from(meta.direction));
+                .unwrap_or_else(|| AnimationDirection::from(meta.direction));
             (meta.range.clone(), dir)
         }
         None => {
-            let dir = anim
-                .direction
-                .clone()
-                .unwrap_or(AnimationDirection::Forward);
-            (0..=(aseprite.frame_durations.len() as u16 - 1), dir)
+            let dir = anim.direction.unwrap_or(AnimationDirection::Forward);
+            (whole_file_range(aseprite), dir)
         }
     };
 
     // Range used for incrementing AseFrame: relative (0-based) when AseTag is
     // present, absolute otherwise.
     let range = if has_tag {
-        0..=(abs_range.end() - abs_range.start())
+        0..=(abs_range.end().saturating_sub(*abs_range.start()))
     } else {
         abs_range.clone()
     };
@@ -827,17 +864,17 @@ fn next_frame(
     // Helper: handle end-of-cycle logic using remaining_cycles.
     // Returns true if the animation should wrap/continue, false if finished.
     let handle_cycle_end = |anim: &mut AseAnimation,
-                            events: &mut MessageWriter<AnimationEvents>,
+                            events: &mut MessageWriter<AnimationEvent>,
                             entity: Entity|
      -> bool {
         match anim.remaining_cycles {
             None => {
-                events.write(AnimationEvents::LoopCycleFinished(entity));
+                events.write(AnimationEvent::LoopCycleFinished(entity));
                 true
             }
             Some(0) => {
                 if anim.queue.is_empty() {
-                    events.write(AnimationEvents::Finished(entity));
+                    events.write(AnimationEvent::Finished(entity));
                 } else {
                     anim.next();
                 }
@@ -852,63 +889,64 @@ fn next_frame(
 
     match direction {
         AnimationDirection::Forward => {
-            let next = frame.0 + 1;
+            let next = frame.0.saturating_add(1);
 
             if next > *range.end() {
-                if handle_cycle_end(&mut anim, &mut events, trigger.0) {
+                if handle_cycle_end(&mut anim, &mut events, entity) {
                     frame.0 = *range.start();
                     state.relative_frame = 0;
                 }
             } else {
                 frame.0 = next;
-                state.relative_frame += 1;
+                state.relative_frame = state.relative_frame.saturating_add(1);
             }
         }
         AnimationDirection::Reverse => {
-            let next = frame.0.checked_sub(1).unwrap_or(*range.end());
-
-            if next == *range.end() {
-                if handle_cycle_end(&mut anim, &mut events, trigger.0) {
-                    frame.0 = range.end() - 1;
-                    state.relative_frame = range.end() - range.start() - 1;
+            // The cycle ends on the range's own first frame, not on an
+            // underflow past zero: a tag whose range does not start at zero
+            // would otherwise never reach the test and would walk out of its
+            // own range. Wrapping returns to the last frame, which is where
+            // reverse playback begins.
+            if frame.0 <= *range.start() {
+                if handle_cycle_end(&mut anim, &mut events, entity) {
+                    frame.0 = *range.end();
+                    state.relative_frame = range.end().saturating_sub(*range.start());
                 }
             } else {
-                frame.0 = next;
-                state.relative_frame = state
-                    .relative_frame
-                    .checked_sub(1)
-                    .unwrap_or(range.end() - range.start() - 1);
+                frame.0 -= 1;
+                state.relative_frame = state.relative_frame.saturating_sub(1);
             }
         }
         AnimationDirection::PingPong | AnimationDirection::PingPongReverse => {
-            let (next, relative_next) = match state.current_direction {
-                PlayDirection::Forward => (frame.0 + 1, state.relative_frame + 1),
-                PlayDirection::Backward => (
-                    frame.0.checked_sub(1).unwrap_or(0),
-                    state.relative_frame.checked_sub(1).unwrap_or(0),
-                ),
-            };
-
-            let is_forward = match state.current_direction {
-                PlayDirection::Forward => true,
-                PlayDirection::Backward => false,
-            };
-
-            if next >= *range.end() && is_forward {
-                if handle_cycle_end(&mut anim, &mut events, trigger.0) {
-                    state.current_direction = PlayDirection::Backward;
-                    frame.0 = range.end() - 2;
-                    state.relative_frame = range.end() - range.start() - 2;
+            // The bounce turns around standing on the range's own ends, so both
+            // of them are shown; turning a frame early skipped whichever end the
+            // walk was heading for. A one-frame range has nowhere to step, so
+            // the turn leaves it where it is.
+            match state.current_direction {
+                PlayDirection::Forward => {
+                    if frame.0 >= *range.end() {
+                        if handle_cycle_end(&mut anim, &mut events, entity) {
+                            state.current_direction = PlayDirection::Backward;
+                            frame.0 = range.end().saturating_sub(1).max(*range.start());
+                            state.relative_frame = state.relative_frame.saturating_sub(1);
+                        }
+                    } else {
+                        frame.0 = frame.0.saturating_add(1);
+                        state.relative_frame = state.relative_frame.saturating_add(1);
+                    }
                 }
-            } else if next <= *range.start() && !is_forward {
-                if handle_cycle_end(&mut anim, &mut events, trigger.0) {
-                    state.current_direction = PlayDirection::Forward;
-                    frame.0 = *range.start();
-                    state.relative_frame = 0;
+                PlayDirection::Backward => {
+                    if frame.0 <= *range.start() {
+                        if handle_cycle_end(&mut anim, &mut events, entity) {
+                            state.current_direction = PlayDirection::Forward;
+                            frame.0 = range.start().saturating_add(1).min(*range.end());
+                            state.relative_frame = state.relative_frame.saturating_add(1);
+                        }
+                    } else {
+                        frame.0 = frame.0.saturating_sub(1);
+                        state.relative_frame = state.relative_frame.saturating_sub(1);
+                    }
                 }
-            } else {
-                frame.0 = next;
-                state.relative_frame = relative_next;
             }
         }
     };
@@ -923,6 +961,7 @@ fn next_frame(
 ///
 /// Whether the frame is being driven by [`AseAnimation`] or set manually is
 /// irrelevant — the renderer just reads whichever [`AseFrame`] is in scope.
+#[allow(clippy::type_complexity)]
 pub fn render_children_animation<T: RenderAnimation + Component<Mutability = Mutable>>(
     mut targets: Query<
         (
@@ -1411,7 +1450,7 @@ mod tests {
     /// (so consumers keyed on frame 0 don't miss the first cycle), a mid-clip
     /// frame is suppressed until it changes.
     #[test]
-    fn frame_change_first_observation_reports_only_clean_zero() {
+    fn frame_change_reports_whatever_frame_an_entity_opens_on() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_message::<AnimationFrameChanged>();
@@ -1440,10 +1479,13 @@ mod tests {
                 .collect()
         };
 
+        // Both are announced: a first observation is a change from nothing, and
+        // an animation need not open on frame zero — a reversed one opens on
+        // its last frame, and a held relative frame resumes mid-clip.
         app.update();
-        assert_eq!(drain(&mut app), vec![(clean, 0)]);
+        assert_eq!(drain(&mut app), vec![(clean, 0), (midway, 5)]);
 
-        // The mid-clip entity reports again once its frame changes.
+        // And each reports again once its frame moves.
         app.world_mut()
             .get_mut::<AnimationState>(midway)
             .unwrap()
@@ -1505,13 +1547,13 @@ mod tests {
             frames.extend(step_and_drain(&mut app, entity));
         }
 
-        // The first update has a zero delta and only reports the clean initial
-        // frame 0; every later update ticks once, stepping the frame down and
-        // wrapping at 0 (the wrap re-enters at the last held frame, 2).
-        assert_eq!(frames, vec![0, 2, 1, 0, 2]);
+        // Reverse opens on the range's last frame, 3, and walks down; the wrap
+        // returns there. The first update has a zero delta and reports only
+        // that opening frame.
+        assert_eq!(frames, vec![3, 2, 1, 0, 3]);
         let state = app.world().get::<AnimationState>(entity).unwrap();
-        assert_eq!(state.relative_frame, 2);
-        assert_eq!(app.world().get::<AseFrame>(entity).unwrap().0, 2);
+        assert_eq!(state.relative_frame, 3);
+        assert_eq!(app.world().get::<AseFrame>(entity).unwrap().0, 3);
     }
 
     /// Ping-pong playback on a tagged animation without an `AseTag` (absolute
@@ -1552,9 +1594,10 @@ mod tests {
         }
 
         // The first update has a zero delta: it enters the tag and reports the
-        // clean initial frame 0. Every later update ticks once — forward to
-        // the bounce, back down to the other bounce, and forward again.
-        assert_eq!(frames, vec![0, 1, 2, 3, 4, 3, 2, 1, 0, 1]);
+        // clean initial frame 0. Every later update ticks once — up to the
+        // range's last frame, 5, then back down. The bounce stands on the end
+        // rather than turning before it.
+        assert_eq!(frames, vec![0, 1, 2, 3, 4, 5, 4, 3, 2, 1]);
     }
 
     /// A child's own AseTag overrides the parent's.
@@ -1575,5 +1618,390 @@ mod tests {
             .id();
         app.update();
         assert_eq!(last_frame(&app, child), Some(3));
+    }
+
+    // ---------- Totality: missing tags, empty assets, unknown directions ----------
+
+    /// A tag the file does not define plays the whole file instead of taking
+    /// the app down. The CHANGELOG promised this; the tick system now honours
+    /// it the same way `next_frame` always has.
+    #[test]
+    fn missing_tag_falls_back_to_the_whole_file() {
+        let (mut app, handle) = plugin_app(test_aseprite(), 120);
+        let entity = app
+            .world_mut()
+            .spawn((AseAnimation::tag("wlak"), AnimationLayer::new(handle)))
+            .id();
+
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            app.update();
+            seen.push(app.world().get::<AseFrame>(entity).expect("frame").0);
+        }
+
+        assert_eq!(
+            seen,
+            vec![0, 1, 2, 3, 0],
+            "typo'd tag should play frames 0..=3"
+        );
+    }
+
+    /// An asset with no frames at all — `Aseprite::default()`, which every
+    /// `Handle::default()` resolves to — must tick without panicking, in every
+    /// direction and with or without a tag.
+    #[test]
+    fn zero_frame_asset_never_panics() {
+        for direction in [
+            AnimationDirection::Forward,
+            AnimationDirection::Reverse,
+            AnimationDirection::PingPong,
+            AnimationDirection::PingPongReverse,
+        ] {
+            let (mut app, handle) = plugin_app(Aseprite::default(), 120);
+            let untagged = app
+                .world_mut()
+                .spawn((
+                    AseAnimation::default().with_direction(direction),
+                    AnimationLayer::new(handle.clone()),
+                ))
+                .id();
+            let tagged = app
+                .world_mut()
+                .spawn((
+                    AseAnimation::tag("nothing").with_direction(direction),
+                    AseTag::new("nothing"),
+                    AnimationLayer::new(handle.clone()),
+                ))
+                .id();
+
+            for _ in 0..4 {
+                app.update();
+            }
+
+            assert_eq!(app.world().get::<AseFrame>(untagged).unwrap().0, 0);
+            assert_eq!(app.world().get::<AseFrame>(tagged).unwrap().0, 0);
+        }
+    }
+
+    /// A tag one or two frames long leaves ping-pong nothing to bounce
+    /// between; the wrap must clamp rather than underflow.
+    #[test]
+    fn short_tag_pingpong_never_panics() {
+        use crate::loader::TagMeta;
+
+        for (name, start, end) in [("solo", 0u16, 0u16), ("pair", 5u16, 6u16)] {
+            let mut ase = test_aseprite();
+            ase.frame_durations = vec![Duration::from_millis(100); 10];
+            ase.frame_indicies = (0..10).collect();
+            ase.tags.insert(
+                name.to_string(),
+                TagMeta {
+                    direction: RawDirection::PingPong,
+                    range: start..=end,
+                    repeat: 0,
+                },
+            );
+
+            let (mut app, handle) = plugin_app(ase, 120);
+            app.world_mut()
+                .spawn((AseAnimation::tag(name), AnimationLayer::new(handle)));
+            for _ in 0..4 {
+                app.update();
+            }
+        }
+    }
+
+    /// A frame index the asset cannot resolve — a tag reaching past the end of
+    /// the file — skips that entity only. Both entities share an archetype, so
+    /// the broken one is visited first.
+    #[test]
+    fn unresolvable_frame_skips_only_its_own_entity() {
+        use crate::loader::TagMeta;
+
+        let mut ase = test_aseprite();
+        ase.tags.insert(
+            "overrun".to_string(),
+            TagMeta {
+                direction: RawDirection::Forward,
+                range: 2..=9,
+                repeat: 0,
+            },
+        );
+        ase.tags.insert(
+            "walk".to_string(),
+            TagMeta {
+                direction: RawDirection::Forward,
+                range: 0..=3,
+                repeat: 0,
+            },
+        );
+
+        let (mut app, handle) = plugin_app(ase, 120);
+        // Frame 3 of "overrun" is absolute frame 5, past the asset's 4 frames.
+        app.world_mut().spawn((
+            AseAnimation::tag("overrun"),
+            AseTag::new("overrun"),
+            AseFrame::new(3),
+            AnimationLayer::new(handle.clone()),
+        ));
+        let healthy = app
+            .world_mut()
+            .spawn((
+                AseAnimation::tag("walk"),
+                AseTag::new("walk"),
+                AseFrame::new(0),
+                AnimationLayer::new(handle),
+            ))
+            .id();
+
+        for _ in 0..3 {
+            app.update();
+        }
+
+        assert_eq!(
+            app.world().get::<AseFrame>(healthy).unwrap().0,
+            2,
+            "an unresolvable frame on an earlier entity must not stall later ones"
+        );
+    }
+
+    /// Directions the aseprite format gains later read as forward playback
+    /// rather than aborting the conversion.
+    #[test]
+    fn unknown_raw_direction_reads_as_forward() {
+        assert_eq!(
+            AnimationDirection::from(RawDirection::Unknown(42)),
+            AnimationDirection::Forward
+        );
+        assert_eq!(
+            AnimationDirection::from(RawDirection::PingPongReverse),
+            AnimationDirection::PingPongReverse
+        );
+    }
+
+    /// `NextFrame` targets an entity, so a `ManualTick` animation advances only
+    /// when its own event is triggered.
+    #[test]
+    fn next_frame_advances_the_targeted_entity_only() {
+        let (mut app, handle) = plugin_app(test_aseprite(), 120);
+        let driven = app
+            .world_mut()
+            .spawn((
+                AseAnimation::default(),
+                ManualTick,
+                AnimationLayer::new(handle.clone()),
+            ))
+            .id();
+        let idle = app
+            .world_mut()
+            .spawn((
+                AseAnimation::default(),
+                ManualTick,
+                AnimationLayer::new(handle),
+            ))
+            .id();
+
+        app.update();
+        app.world_mut().trigger(NextFrame { entity: driven });
+        app.update();
+
+        assert_eq!(app.world().get::<AseFrame>(driven).unwrap().0, 1);
+        assert_eq!(app.world().get::<AseFrame>(idle).unwrap().0, 0);
+    }
+
+    /// Reflected components carry `ReflectComponent`, without which inspectors
+    /// cannot show them and dynamic scenes drop them.
+    #[test]
+    fn components_register_reflect_component() {
+        use bevy::ecs::reflect::ReflectComponent;
+        use bevy::reflect::TypeRegistry;
+
+        let (app, _) = plugin_app(test_aseprite(), 120);
+        let registry = app.world().resource::<AppTypeRegistry>().read();
+
+        let assert_registered = |registry: &TypeRegistry, name: &str| {
+            let registration = registry
+                .get_with_type_path(name)
+                .unwrap_or_else(|| panic!("{name} is not registered"));
+            assert!(
+                registration.data::<ReflectComponent>().is_some(),
+                "{name} is registered without ReflectComponent",
+            );
+        };
+
+        for name in [
+            "bevy_aseprite_ultra::animation::AseAnimation",
+            "bevy_aseprite_ultra::animation::AseFrame",
+            "bevy_aseprite_ultra::animation::AseTag",
+            "bevy_aseprite_ultra::animation::AnimationLayer",
+            "bevy_aseprite_ultra::animation::AnimationState",
+            "bevy_aseprite_ultra::animation::AnimationFrameCursor",
+            "bevy_aseprite_ultra::animation::ManualTick",
+        ] {
+            assert_registered(&registry, name);
+        }
+    }
+
+    /// Ping-pong bounces off both ends of the tag and shows every frame on the
+    /// way, wherever the tag sits in the file.
+    #[test]
+    fn ping_pong_bounces_inside_the_tag_wherever_it_sits() {
+        use crate::loader::TagMeta;
+
+        for (name, start, end) in [("zero", 0u16, 3u16), ("offset", 5u16, 9u16)] {
+            let mut ase = test_aseprite();
+            ase.frame_durations = vec![Duration::from_millis(100); 10];
+            ase.frame_indicies = (0..10).collect();
+            ase.tags.insert(
+                name.to_string(),
+                TagMeta {
+                    direction: RawDirection::PingPong,
+                    range: start..=end,
+                    repeat: 0,
+                },
+            );
+            let (mut app, handle) = plugin_app(ase, 120);
+            let entity = app
+                .world_mut()
+                .spawn((AseAnimation::tag(name), AnimationLayer::new(handle)))
+                .id();
+
+            // No `AseTag` component, so frames stay absolute.
+            let mut seen = Vec::new();
+            for _ in 0..(end - start + 1) * 3 {
+                app.update();
+                let frame = app.world().get::<AseFrame>(entity).expect("frame").0;
+                seen.push(frame);
+                assert!(
+                    (start..=end).contains(&frame),
+                    "{name}: frame {frame} left the tag's {start}..={end}, saw {seen:?}",
+                );
+            }
+            for expected in start..=end {
+                assert!(
+                    seen.contains(&expected),
+                    "{name}: frame {expected} never played, saw {seen:?}",
+                );
+            }
+        }
+    }
+
+    /// The far-end start must not depend on the frame happening to begin
+    /// outside the range: a tag at 0..=3 already contains frame 0.
+    #[test]
+    fn ping_pong_reverse_opens_backward_on_a_zero_based_tag() {
+        use crate::loader::TagMeta;
+
+        let mut ase = test_aseprite();
+        ase.frame_durations = vec![Duration::from_millis(100); 4];
+        ase.frame_indicies = (0..4).collect();
+        ase.tags.insert(
+            "bounce".to_string(),
+            TagMeta {
+                direction: RawDirection::PingPongReverse,
+                range: 0..=3,
+                repeat: 0,
+            },
+        );
+        let (mut app, handle) = plugin_app(ase, 120);
+        let entity = app
+            .world_mut()
+            .spawn((AseAnimation::tag("bounce"), AnimationLayer::new(handle)))
+            .id();
+
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            app.update();
+            seen.push(app.world().get::<AseFrame>(entity).expect("frame").0);
+        }
+        assert_eq!(
+            seen[0], 3,
+            "a reversed ping-pong opens on the range's last frame, saw {seen:?}",
+        );
+    }
+
+    /// A reversed ping-pong starts at the far end and walks back, which is what
+    /// distinguishes it from a plain ping-pong.
+    #[test]
+    fn ping_pong_reverse_starts_at_the_far_end() {
+        use crate::loader::TagMeta;
+
+        let mut ase = test_aseprite();
+        ase.frame_durations = vec![Duration::from_millis(100); 10];
+        ase.frame_indicies = (0..10).collect();
+        ase.tags.insert(
+            "bounce".to_string(),
+            TagMeta {
+                direction: RawDirection::PingPongReverse,
+                range: 5..=9,
+                repeat: 0,
+            },
+        );
+        let (mut app, handle) = plugin_app(ase, 120);
+        let entity = app
+            .world_mut()
+            .spawn((AseAnimation::tag("bounce"), AnimationLayer::new(handle)))
+            .id();
+
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            app.update();
+            seen.push(app.world().get::<AseFrame>(entity).expect("frame").0);
+        }
+        assert!(
+            seen[1] < seen[0] || seen[0] == 9,
+            "a reversed ping-pong walks down from the end, saw {seen:?}",
+        );
+    }
+
+    /// Reverse walks the whole tag and stays inside it, wherever the tag sits
+    /// in the file.
+    ///
+    /// `AseFrame` is relative to the tag, so a tag at 5..=9 has frames 0..=4;
+    /// reverse must visit every one of them and wrap back to the last, not
+    /// step below zero and strand the animation outside its own range.
+    #[test]
+    fn reverse_walks_every_frame_of_a_tag_wherever_it_sits() {
+        use crate::loader::TagMeta;
+
+        for (name, start, end) in [("zero", 0u16, 3u16), ("offset", 5u16, 9u16)] {
+            let span = end - start;
+            // No `AseTag` component, so frames stay absolute — the shape every
+            // example spawns.
+            let mut ase = test_aseprite();
+            ase.frame_durations = vec![Duration::from_millis(100); 10];
+            ase.frame_indicies = (0..10).collect();
+            ase.tags.insert(
+                name.to_string(),
+                TagMeta {
+                    direction: RawDirection::Reverse,
+                    range: start..=end,
+                    repeat: 0,
+                },
+            );
+            let (mut app, handle) = plugin_app(ase, 120);
+            let entity = app
+                .world_mut()
+                .spawn((AseAnimation::tag(name), AnimationLayer::new(handle)))
+                .id();
+
+            let mut seen = Vec::new();
+            for _ in 0..(span + 1) * 2 {
+                app.update();
+                let frame = app.world().get::<AseFrame>(entity).expect("frame").0;
+                seen.push(frame);
+                assert!(
+                    (start..=end).contains(&frame),
+                    "{name}: frame {frame} left the tag's {start}..={end}, saw {seen:?}",
+                );
+            }
+
+            for expected in start..=end {
+                assert!(
+                    seen.contains(&expected),
+                    "{name}: frame {expected} never played, saw {seen:?}",
+                );
+            }
+        }
     }
 }

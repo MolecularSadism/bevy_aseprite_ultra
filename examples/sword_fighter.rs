@@ -146,9 +146,8 @@ fn handle_input(
             if let Some(aseprite) = assets.get(&tex.aseprite) {
                 // Reset to asset base order, then reorder if swapped
                 tex.layer_order = None;
-                tex.init_layer_order_from(aseprite);
                 if state.layers_swapped {
-                    tex.reorder_layer(swoosh, 0);
+                    tex.reorder_layer(aseprite, swoosh, 0);
                 }
             }
         }

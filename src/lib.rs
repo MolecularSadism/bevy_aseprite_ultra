@@ -15,23 +15,30 @@ pub(crate) mod slice;
 pub mod prelude {
     pub use crate::AsepriteUltraPlugin;
     pub use crate::animation::{
-        AnimationDirection, AnimationEvents, AnimationFrameChanged, AnimationFrameCursor,
+        AnimationDirection, AnimationEvent, AnimationFrameChanged, AnimationFrameCursor,
         AnimationLayer, AnimationRepeat, AnimationState, AseAnimation, AseFrame, AseTag,
-        ManualTick, NextFrameEvent, PlayDirection, RenderAnimation, emit_animation_frame_changed,
+        ManualTick, NextFrame, PlayDirection, RenderAnimation, emit_animation_frame_changed,
         render_children_animation, resolve_frame,
     };
+    pub use crate::error::AsepriteError;
     pub use crate::layers::{
-        AseFlip, AseTexture, LayerEntry, LayerFilter, LayerId, RenderTarget, SliceId,
+        AseFlip, AseRenderTarget, AseTexture, LayerEntry, LayerFilter, LayerId, SliceId,
         SpriteLayerOf, SpriteLayers,
     };
-    pub use crate::loader::{Aseprite, AsepriteLoaderPlugin, AsepriteLoaderSettings, SliceMeta};
+    pub use crate::loader::{
+        Aseprite, AsepriteLoader, AsepriteLoaderPlugin, AsepriteLoaderSettings, SliceKeyMeta,
+        SliceMeta, TagMeta,
+    };
     pub use crate::slice::{AseSlice, RenderSlice, nine_patch_to_slicer, render_slice};
 }
 
 /// The main plugin. Add this to your [`App`] to enable aseprite loading,
 /// animation, slices, and layered rendering.
 ///
-/// ```rust
+/// Compiled but not run: `DefaultPlugins` builds a winit event loop, which
+/// needs a display.
+///
+/// ```rust,no_run
 /// # use bevy::prelude::*;
 /// # use bevy_aseprite_ultra::prelude::*;
 /// fn main() {
