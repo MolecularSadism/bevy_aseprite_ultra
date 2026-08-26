@@ -709,12 +709,14 @@ pub fn update_aseprite_animation(
         // Mirror the animation's tag into AseTag (when present) so the renderer
         // can resolve tag-relative frames consistently. AseFrame is treated as
         // tag-relative on this entity.
+        //
+        // `set_if_neq` rather than a compare behind `as_deref_mut`: reaching
+        // the tag through `DerefMut` flags the component before anything has
+        // looked at it, and every renderer resolving a tag-relative frame
+        // watches that flag.
         let has_tag = ase_tag.is_some();
-        if let Some(tag) = ase_tag.as_deref_mut() {
-            let desired = animation.tag.unwrap_or_default();
-            if tag.0 != desired {
-                tag.0 = desired;
-            }
+        if let Some(tag) = ase_tag.as_mut() {
+            tag.set_if_neq(AseTag(animation.tag.unwrap_or_default()));
         }
 
         // Working range/index: absolute when no AseTag, relative when AseTag is present.
@@ -1352,6 +1354,45 @@ mod tests {
         assert_eq!(
             app.world().get::<AseTag>(entity).map(|tag| tag.0),
             Some(TagId::new("Rock")),
+        );
+    }
+
+    /// The mirror leaves `AseTag` alone once it already names the playing tag.
+    ///
+    /// Every renderer that resolves a tag-relative frame watches this component
+    /// for change, so flagging it on a tick that wrote nothing re-renders every
+    /// animated entity in the world for as long as it plays.
+    #[test]
+    fn the_mirror_does_not_touch_a_tag_that_already_matches() {
+        #[derive(Resource, Default)]
+        struct Flagged(usize);
+
+        fn count_flagged(mut flagged: ResMut<Flagged>, tags: Query<(), Changed<AseTag>>) {
+            flagged.0 += tags.iter().count();
+        }
+
+        let (mut app, handle) = plugin_app(tagged_aseprite(), 120);
+        app.init_resource::<Flagged>();
+        app.add_systems(Last, count_flagged);
+        app.world_mut().spawn((
+            AseAnimation::tag("Rock"),
+            AseTag::new("stale"),
+            AnimationLayer::new(handle),
+        ));
+
+        // The first tick writes the tag the animation actually plays, so one
+        // report is the spawn plus that correction.
+        app.update();
+        let after_first = app.world().resource::<Flagged>().0;
+
+        // Every tick after it agrees with the animation and has nothing to say.
+        for _ in 0..4 {
+            app.update();
+        }
+        assert_eq!(
+            app.world().resource::<Flagged>().0,
+            after_first,
+            "the mirror flagged AseTag on a tick that wrote nothing",
         );
     }
 
