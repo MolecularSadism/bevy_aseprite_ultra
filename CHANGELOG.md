@@ -6,6 +6,18 @@ types the way an ECS crate should.
 
 ### The crate no longer takes the process down
 
+- **ping-pong bounces on the range's own ends.** It turned around a frame
+  early, so whichever end the walk was heading for never displayed — the same
+  skip reverse had. A one-frame range now stays put instead of stepping
+  outside itself.
+- **`PingPongReverse` opens at the far end walking down.** The play direction
+  was never seeded from the animation's direction, so it was indistinguishable
+  from `PingPong`. `Reverse` opens there too, rather than showing the first
+  frame once and jumping.
+- **the frame an animation opens on is announced.** `AnimationFrameChanged`
+  reported a first observation only when it landed on frame zero, so an
+  animation opening anywhere else — a reversed one, or a held relative frame
+  resuming mid-clip — never announced its opening frame at all.
 - **a missing animation tag plays the whole file** instead of panicking. The
   tick system returned an error, and bevy's default handler panics, so
   renaming a tag in Aseprite or a typo in `AseAnimation::tag` crashed the

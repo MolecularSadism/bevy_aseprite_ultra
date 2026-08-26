@@ -573,12 +573,17 @@ pub fn emit_animation_frame_changed(
         let current = state.relative_frame;
         let tag = animation.tag.as_deref();
 
+        // The first frame an entity is seen on is a change from nothing, so it
+        // is announced wherever it falls. Testing it against zero announced
+        // only animations that happen to open on their first frame, and a
+        // reversed one opens on its last.
         let Some(mut cursor) = cursor else {
             cmd.entity(entity)
                 .insert(AnimationFrameCursor::new(current, tag));
-            if current == 0 {
-                writer.write(AnimationFrameChanged { entity, frame: 0 });
-            }
+            writer.write(AnimationFrameChanged {
+                entity,
+                frame: current,
+            });
             continue;
         };
 
@@ -715,6 +720,18 @@ pub fn update_aseprite_animation(
         };
         let working_range = lo..=hi;
 
+        // Where playback enters the range, and which way it leaves: a reversed
+        // direction opens at the far end walking down, which is the only thing
+        // separating `PingPongReverse` from `PingPong`.
+        let direction = animation.direction.unwrap_or_else(|| {
+            tag_meta.map_or(AnimationDirection::Forward, |m| m.direction.into())
+        });
+        let opens_backward = matches!(
+            direction,
+            AnimationDirection::Reverse | AnimationDirection::PingPongReverse
+        );
+        let entry = if opens_backward { hi } else { lo };
+
         // Resolve remaining_cycles from override or file when needed.
         // remaining_cycles counts how many more times the animation will restart
         // after the current play: Count(1) → 0 remaining, Count(2) → 1 remaining, etc.
@@ -727,20 +744,29 @@ pub fn update_aseprite_animation(
                     _ => None,
                 },
             };
+            state.current_direction = if opens_backward {
+                PlayDirection::Backward
+            } else {
+                PlayDirection::Forward
+            };
+            if opens_backward {
+                frame.0 = entry;
+                state.relative_frame = hi.saturating_sub(lo);
+            }
             animation.needs_repeat_init = false;
         }
 
         if !working_range.contains(&frame.0) {
             if !animation.hold_relative_frame {
-                frame.0 = lo;
-                state.relative_frame = 0;
+                frame.0 = entry;
+                state.relative_frame = hi.saturating_sub(lo) * u16::from(opens_backward);
                 animation.relative_group = 0;
                 animation.new_relative_group = 0;
             } else {
                 if animation.new_relative_group != animation.relative_group {
                     animation.relative_group = animation.new_relative_group;
-                    frame.0 = lo;
-                    state.relative_frame = 0;
+                    frame.0 = entry;
+                    state.relative_frame = hi.saturating_sub(lo) * u16::from(opens_backward);
                     state.elapsed = std::time::Duration::ZERO;
                 } else {
                     let span = hi.saturating_sub(lo).saturating_add(1);
@@ -892,38 +918,35 @@ fn next_frame(
             }
         }
         AnimationDirection::PingPong | AnimationDirection::PingPongReverse => {
-            let (next, relative_next) = match state.current_direction {
-                PlayDirection::Forward => (
-                    frame.0.saturating_add(1),
-                    state.relative_frame.saturating_add(1),
-                ),
-                PlayDirection::Backward => (
-                    frame.0.saturating_sub(1),
-                    state.relative_frame.saturating_sub(1),
-                ),
-            };
-
-            let is_forward = match state.current_direction {
-                PlayDirection::Forward => true,
-                PlayDirection::Backward => false,
-            };
-
-            if next >= *range.end() && is_forward {
-                if handle_cycle_end(&mut anim, &mut events, entity) {
-                    state.current_direction = PlayDirection::Backward;
-                    frame.0 = range.end().saturating_sub(2);
-                    state.relative_frame =
-                        range.end().saturating_sub(*range.start()).saturating_sub(2);
+            // The bounce turns around standing on the range's own ends, so both
+            // of them are shown; turning a frame early skipped whichever end the
+            // walk was heading for. A one-frame range has nowhere to step, so
+            // the turn leaves it where it is.
+            match state.current_direction {
+                PlayDirection::Forward => {
+                    if frame.0 >= *range.end() {
+                        if handle_cycle_end(&mut anim, &mut events, entity) {
+                            state.current_direction = PlayDirection::Backward;
+                            frame.0 = range.end().saturating_sub(1).max(*range.start());
+                            state.relative_frame = state.relative_frame.saturating_sub(1);
+                        }
+                    } else {
+                        frame.0 = frame.0.saturating_add(1);
+                        state.relative_frame = state.relative_frame.saturating_add(1);
+                    }
                 }
-            } else if next <= *range.start() && !is_forward {
-                if handle_cycle_end(&mut anim, &mut events, entity) {
-                    state.current_direction = PlayDirection::Forward;
-                    frame.0 = *range.start();
-                    state.relative_frame = 0;
+                PlayDirection::Backward => {
+                    if frame.0 <= *range.start() {
+                        if handle_cycle_end(&mut anim, &mut events, entity) {
+                            state.current_direction = PlayDirection::Forward;
+                            frame.0 = range.start().saturating_add(1).min(*range.end());
+                            state.relative_frame = state.relative_frame.saturating_add(1);
+                        }
+                    } else {
+                        frame.0 = frame.0.saturating_sub(1);
+                        state.relative_frame = state.relative_frame.saturating_sub(1);
+                    }
                 }
-            } else {
-                frame.0 = next;
-                state.relative_frame = relative_next;
             }
         }
     };
@@ -1427,7 +1450,7 @@ mod tests {
     /// (so consumers keyed on frame 0 don't miss the first cycle), a mid-clip
     /// frame is suppressed until it changes.
     #[test]
-    fn frame_change_first_observation_reports_only_clean_zero() {
+    fn frame_change_reports_whatever_frame_an_entity_opens_on() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_message::<AnimationFrameChanged>();
@@ -1456,10 +1479,13 @@ mod tests {
                 .collect()
         };
 
+        // Both are announced: a first observation is a change from nothing, and
+        // an animation need not open on frame zero — a reversed one opens on
+        // its last frame, and a held relative frame resumes mid-clip.
         app.update();
-        assert_eq!(drain(&mut app), vec![(clean, 0)]);
+        assert_eq!(drain(&mut app), vec![(clean, 0), (midway, 5)]);
 
-        // The mid-clip entity reports again once its frame changes.
+        // And each reports again once its frame moves.
         app.world_mut()
             .get_mut::<AnimationState>(midway)
             .unwrap()
@@ -1521,14 +1547,13 @@ mod tests {
             frames.extend(step_and_drain(&mut app, entity));
         }
 
-        // The first update has a zero delta and only reports the clean initial
-        // frame 0; every later update ticks once, stepping the frame down and
-        // wrapping at 0. The wrap re-enters at the range's last frame, 3 —
-        // reverse plays the whole range, so the final frame is not skipped.
-        assert_eq!(frames, vec![0, 3, 2, 1, 0]);
+        // Reverse opens on the range's last frame, 3, and walks down; the wrap
+        // returns there. The first update has a zero delta and reports only
+        // that opening frame.
+        assert_eq!(frames, vec![3, 2, 1, 0, 3]);
         let state = app.world().get::<AnimationState>(entity).unwrap();
-        assert_eq!(state.relative_frame, 0);
-        assert_eq!(app.world().get::<AseFrame>(entity).unwrap().0, 0);
+        assert_eq!(state.relative_frame, 3);
+        assert_eq!(app.world().get::<AseFrame>(entity).unwrap().0, 3);
     }
 
     /// Ping-pong playback on a tagged animation without an `AseTag` (absolute
@@ -1569,9 +1594,10 @@ mod tests {
         }
 
         // The first update has a zero delta: it enters the tag and reports the
-        // clean initial frame 0. Every later update ticks once — forward to
-        // the bounce, back down to the other bounce, and forward again.
-        assert_eq!(frames, vec![0, 1, 2, 3, 4, 3, 2, 1, 0, 1]);
+        // clean initial frame 0. Every later update ticks once — up to the
+        // range's last frame, 5, then back down. The bounce stands on the end
+        // rather than turning before it.
+        assert_eq!(frames, vec![0, 1, 2, 3, 4, 5, 4, 3, 2, 1]);
     }
 
     /// A child's own AseTag overrides the parent's.
@@ -1814,6 +1840,118 @@ mod tests {
         ] {
             assert_registered(&registry, name);
         }
+    }
+
+    /// Ping-pong bounces off both ends of the tag and shows every frame on the
+    /// way, wherever the tag sits in the file.
+    #[test]
+    fn ping_pong_bounces_inside_the_tag_wherever_it_sits() {
+        use crate::loader::TagMeta;
+
+        for (name, start, end) in [("zero", 0u16, 3u16), ("offset", 5u16, 9u16)] {
+            let mut ase = test_aseprite();
+            ase.frame_durations = vec![Duration::from_millis(100); 10];
+            ase.frame_indicies = (0..10).collect();
+            ase.tags.insert(
+                name.to_string(),
+                TagMeta {
+                    direction: RawDirection::PingPong,
+                    range: start..=end,
+                    repeat: 0,
+                },
+            );
+            let (mut app, handle) = plugin_app(ase, 120);
+            let entity = app
+                .world_mut()
+                .spawn((AseAnimation::tag(name), AnimationLayer::new(handle)))
+                .id();
+
+            // No `AseTag` component, so frames stay absolute.
+            let mut seen = Vec::new();
+            for _ in 0..(end - start + 1) * 3 {
+                app.update();
+                let frame = app.world().get::<AseFrame>(entity).expect("frame").0;
+                seen.push(frame);
+                assert!(
+                    (start..=end).contains(&frame),
+                    "{name}: frame {frame} left the tag's {start}..={end}, saw {seen:?}",
+                );
+            }
+            for expected in start..=end {
+                assert!(
+                    seen.contains(&expected),
+                    "{name}: frame {expected} never played, saw {seen:?}",
+                );
+            }
+        }
+    }
+
+    /// The far-end start must not depend on the frame happening to begin
+    /// outside the range: a tag at 0..=3 already contains frame 0.
+    #[test]
+    fn ping_pong_reverse_opens_backward_on_a_zero_based_tag() {
+        use crate::loader::TagMeta;
+
+        let mut ase = test_aseprite();
+        ase.frame_durations = vec![Duration::from_millis(100); 4];
+        ase.frame_indicies = (0..4).collect();
+        ase.tags.insert(
+            "bounce".to_string(),
+            TagMeta {
+                direction: RawDirection::PingPongReverse,
+                range: 0..=3,
+                repeat: 0,
+            },
+        );
+        let (mut app, handle) = plugin_app(ase, 120);
+        let entity = app
+            .world_mut()
+            .spawn((AseAnimation::tag("bounce"), AnimationLayer::new(handle)))
+            .id();
+
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            app.update();
+            seen.push(app.world().get::<AseFrame>(entity).expect("frame").0);
+        }
+        assert_eq!(
+            seen[0], 3,
+            "a reversed ping-pong opens on the range's last frame, saw {seen:?}",
+        );
+    }
+
+    /// A reversed ping-pong starts at the far end and walks back, which is what
+    /// distinguishes it from a plain ping-pong.
+    #[test]
+    fn ping_pong_reverse_starts_at_the_far_end() {
+        use crate::loader::TagMeta;
+
+        let mut ase = test_aseprite();
+        ase.frame_durations = vec![Duration::from_millis(100); 10];
+        ase.frame_indicies = (0..10).collect();
+        ase.tags.insert(
+            "bounce".to_string(),
+            TagMeta {
+                direction: RawDirection::PingPongReverse,
+                range: 5..=9,
+                repeat: 0,
+            },
+        );
+        let (mut app, handle) = plugin_app(ase, 120);
+        let entity = app
+            .world_mut()
+            .spawn((AseAnimation::tag("bounce"), AnimationLayer::new(handle)))
+            .id();
+
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            app.update();
+            seen.push(app.world().get::<AseFrame>(entity).expect("frame").0);
+        }
+        assert!(
+            seen[1] < seen[0] || seen[0] == 9,
+            "a reversed ping-pong walks down from the end, saw {seen:?}",
+        );
     }
 
     /// Reverse walks the whole tag and stays inside it, wherever the tag sits
