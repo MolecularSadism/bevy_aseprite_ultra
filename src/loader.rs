@@ -1,7 +1,8 @@
+use crate::animation::AnimationDirection;
 use crate::error::AsepriteError;
 use crate::layers::{LayerEntry, LayerId};
 use aseprite_loader::{
-    binary::chunks::{layer::LayerType, tags::AnimationDirection},
+    binary::chunks::layer::LayerType,
     loader::{AsepriteFile, LayerSelection},
 };
 use bevy::{
@@ -153,21 +154,9 @@ mod layer_serde {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "asset_processing", derive(Serialize, Deserialize))]
 pub struct TagMeta {
-    #[cfg_attr(feature = "asset_processing", serde(with = "AnimationDirectionDef"))]
     pub direction: AnimationDirection,
     pub range: std::ops::RangeInclusive<u16>,
     pub repeat: u16,
-}
-
-#[cfg(feature = "asset_processing")]
-#[derive(Serialize, Deserialize)]
-#[serde(remote = "AnimationDirection")]
-enum AnimationDirectionDef {
-    Forward,
-    Reverse,
-    PingPong,
-    PingPongReverse,
-    Unknown(u8),
 }
 
 /// Metadata for a single key in a slice's animation timeline.
@@ -673,7 +662,7 @@ impl AssetLoader for AsepriteLoader {
             tags.insert(
                 tag.name.clone(),
                 TagMeta {
-                    direction: tag.direction,
+                    direction: tag.direction.into(),
                     range: tag.range.clone(),
                     repeat: tag.repeat.unwrap_or(0),
                 },

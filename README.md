@@ -34,6 +34,7 @@ rendering, and custom materials.
 - **Baked rendering** — single composite child for simpler use cases
 - Render to custom materials and write shaders on top
 - Optional asset processor for production builds
+- Optional in-memory fixtures for testing against sheet metadata
 
 ## Quick Start
 
@@ -582,3 +583,31 @@ cargo run --features asset_processing
 ```
 
 Then load your aseprite files in code as usual!
+
+## Testing Fixtures
+
+Enable the `testing` feature to build an `Aseprite` from metadata alone — slice
+rects, layer names, tag ranges — for tests that would otherwise need a file on
+disk:
+
+```toml
+[dev-dependencies]
+bevy_aseprite_ultra = { version = "0.11", features = ["testing"] }
+```
+
+```text
+use bevy::prelude::*;
+use bevy_aseprite_ultra::prelude::*;
+use bevy_aseprite_ultra::testing::AsepriteFixture;
+
+let aseprite = AsepriteFixture::new()
+    .with_layer("Body", true)
+    .with_layer("Hat", false)
+    .with_slice("Panel", Rect::new(0.0, 0.0, 16.0, 16.0), 0)
+    .with_tag("walk", 2..=5)
+    .build();
+```
+
+The atlas handles a fixture leaves behind are `Handle::default()`, so nothing
+draws through one; a test asserting on rendered pixels wants a real file through
+the asset loader.

@@ -49,6 +49,8 @@ asset_processing = [
   "bevy/asset_processor",
 ]
 3d = ["bevy/bevy_pbr"]
+# Fixture builders for downstream tests; see `testing::AsepriteFixture`.
+testing = []
 
 [[example]]
 name = "asset_processing"

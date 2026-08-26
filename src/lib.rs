@@ -11,6 +11,8 @@ pub(crate) mod loader;
 #[cfg(feature = "asset_processing")]
 pub(crate) mod processor;
 pub(crate) mod slice;
+#[cfg(feature = "testing")]
+pub mod testing;
 
 pub mod prelude {
     pub use crate::AsepriteUltraPlugin;

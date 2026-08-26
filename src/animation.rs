@@ -595,6 +595,10 @@ pub fn emit_animation_frame_changed(
 
 /// Playback direction for an animation.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Reflect, Debug)]
+#[cfg_attr(
+    feature = "asset_processing",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[reflect(Default, Debug, PartialEq)]
 pub enum AnimationDirection {
     #[default]
@@ -723,9 +727,9 @@ pub fn update_aseprite_animation(
         // Where playback enters the range, and which way it leaves: a reversed
         // direction opens at the far end walking down, which is the only thing
         // separating `PingPongReverse` from `PingPong`.
-        let direction = animation.direction.unwrap_or_else(|| {
-            tag_meta.map_or(AnimationDirection::Forward, |m| m.direction.into())
-        });
+        let direction = animation
+            .direction
+            .unwrap_or_else(|| tag_meta.map_or(AnimationDirection::Forward, |m| m.direction));
         let opens_backward = matches!(
             direction,
             AnimationDirection::Reverse | AnimationDirection::PingPongReverse
@@ -842,9 +846,7 @@ fn next_frame(
 
     let (abs_range, direction) = match anim.tag.as_ref().and_then(|t| aseprite.tags.get(t)) {
         Some(meta) => {
-            let dir = anim
-                .direction
-                .unwrap_or_else(|| AnimationDirection::from(meta.direction));
+            let dir = anim.direction.unwrap_or(meta.direction);
             (meta.range.clone(), dir)
         }
         None => {
@@ -1195,7 +1197,7 @@ mod tests {
         ase.tags.insert(
             "Rock".to_string(),
             TagMeta {
-                direction: RawDirection::Forward,
+                direction: AnimationDirection::Forward,
                 range: 2..=3,
                 repeat: 0,
             },
@@ -1568,7 +1570,7 @@ mod tests {
         ase.tags.insert(
             "walk".to_string(),
             TagMeta {
-                direction: RawDirection::Forward,
+                direction: AnimationDirection::Forward,
                 range: 2..=7,
                 repeat: 0,
             },
@@ -1696,7 +1698,7 @@ mod tests {
             ase.tags.insert(
                 name.to_string(),
                 TagMeta {
-                    direction: RawDirection::PingPong,
+                    direction: AnimationDirection::PingPong,
                     range: start..=end,
                     repeat: 0,
                 },
@@ -1722,7 +1724,7 @@ mod tests {
         ase.tags.insert(
             "overrun".to_string(),
             TagMeta {
-                direction: RawDirection::Forward,
+                direction: AnimationDirection::Forward,
                 range: 2..=9,
                 repeat: 0,
             },
@@ -1730,7 +1732,7 @@ mod tests {
         ase.tags.insert(
             "walk".to_string(),
             TagMeta {
-                direction: RawDirection::Forward,
+                direction: AnimationDirection::Forward,
                 range: 0..=3,
                 repeat: 0,
             },
@@ -1855,7 +1857,7 @@ mod tests {
             ase.tags.insert(
                 name.to_string(),
                 TagMeta {
-                    direction: RawDirection::PingPong,
+                    direction: AnimationDirection::PingPong,
                     range: start..=end,
                     repeat: 0,
                 },
@@ -1898,7 +1900,7 @@ mod tests {
         ase.tags.insert(
             "bounce".to_string(),
             TagMeta {
-                direction: RawDirection::PingPongReverse,
+                direction: AnimationDirection::PingPongReverse,
                 range: 0..=3,
                 repeat: 0,
             },
@@ -1932,7 +1934,7 @@ mod tests {
         ase.tags.insert(
             "bounce".to_string(),
             TagMeta {
-                direction: RawDirection::PingPongReverse,
+                direction: AnimationDirection::PingPongReverse,
                 range: 5..=9,
                 repeat: 0,
             },
@@ -1974,7 +1976,7 @@ mod tests {
             ase.tags.insert(
                 name.to_string(),
                 TagMeta {
-                    direction: RawDirection::Reverse,
+                    direction: AnimationDirection::Reverse,
                     range: start..=end,
                     repeat: 0,
                 },

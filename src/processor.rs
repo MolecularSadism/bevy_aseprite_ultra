@@ -242,7 +242,11 @@ impl AssetLoader for ProcessedAsepriteLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{layers::LayerEntry, loader::SliceMeta, prelude::LayerId};
+    use crate::{
+        layers::LayerEntry,
+        loader::{SliceMeta, TagMeta},
+        prelude::{AnimationDirection, LayerId},
+    };
 
     /// An aseprite as the loader hands it over: layers, slices, frames — all
     /// of it state the cache has to carry, none of it recoverable at load.
@@ -264,6 +268,14 @@ mod tests {
                 nine_patch: None,
                 keys: Vec::new(),
                 frame_atlas_ids: vec![0, 1],
+            },
+        );
+        aseprite.tags.insert(
+            "Swing".into(),
+            TagMeta {
+                direction: AnimationDirection::PingPongReverse,
+                range: 0..=1,
+                repeat: 2,
             },
         );
         aseprite
@@ -290,6 +302,11 @@ mod tests {
             vec![LayerId::new("top")]
         );
         assert!(read_back.root.slice("Panel").is_some());
+
+        let tag = read_back.root.tag("Swing").expect("the tag is kept");
+        assert_eq!(tag.direction, AnimationDirection::PingPongReverse);
+        assert_eq!(tag.range, 0..=1);
+        assert_eq!(tag.repeat, 2);
 
         let (label, variant) = read_back.variants.first().expect("the sub-asset is kept");
         assert_eq!(label, "all");

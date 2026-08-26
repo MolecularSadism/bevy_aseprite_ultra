@@ -4,6 +4,21 @@ Breaking. The crate stops panicking on art it does not like, stops failing
 silently where a warning would save an artist an afternoon, and names its
 types the way an ECS crate should.
 
+### Downstream crates can build an `Aseprite` for their own tests
+
+- **`testing` feature**: `testing::AsepriteFixture` assembles an `Aseprite`
+  from slice, layer and tag metadata, so a downstream crate can test against
+  sheet metadata without a file on disk. Off by default and deliberately
+  outside `prelude` — it is opted into from a test target. Only the loader
+  pairs metadata with pixels, so a fixture's atlas handles are
+  `Handle::default()` and nothing renders through one.
+- Breaking: **`TagMeta::direction` is the crate's own `AnimationDirection`**,
+  converted at the loader boundary. It was `aseprite_loader`'s enum, so
+  reading a tag's direction meant depending on `aseprite_loader` to name the
+  type. The `AnimationDirectionDef` serde shim is gone with it; a processed
+  cache holding a direction the crate does not recognise now fails to load
+  rather than silently playing forward.
+
 ### The crate no longer takes the process down
 
 - **ping-pong bounces on the range's own ends.** It turned around a frame
