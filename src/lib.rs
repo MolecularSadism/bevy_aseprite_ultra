@@ -24,7 +24,11 @@ pub mod prelude {
         AseFlip, AseRenderTarget, AseTexture, LayerEntry, LayerFilter, LayerId, SliceId,
         SpriteLayerOf, SpriteLayers,
     };
-    pub use crate::loader::{Aseprite, AsepriteLoaderPlugin, AsepriteLoaderSettings, SliceMeta};
+    pub use crate::error::AsepriteError;
+    pub use crate::loader::{
+        Aseprite, AsepriteLoader, AsepriteLoaderPlugin, AsepriteLoaderSettings, SliceKeyMeta,
+        SliceMeta, TagMeta,
+    };
     pub use crate::slice::{AseSlice, RenderSlice, nine_patch_to_slicer, render_slice};
 }
 
