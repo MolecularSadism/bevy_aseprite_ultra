@@ -88,11 +88,12 @@ fn visible_layer_ids_skip_what_the_file_hid() {
 // ---------------------------------------------------------------- //
 
 /// A loaded file whose layers are `names`, front to back.
-fn asset_with_layers(name: &str, names: &[&str]) -> (App, Handle<Aseprite>) {
+fn asset_with_layers(name: &str, names: &[&'static str]) -> (App, Handle<Aseprite>) {
     // `stack` takes the file's own bottom-to-top order, the reverse of the
     // front-to-back order the asset reports.
     let layers = names.iter().rev().map(|n| Layer::normal(n, 0)).collect();
-    layers_of(name, &stack(layers))
+    let fixture = stack(layers);
+    layers_of(name, &fixture)
 }
 
 /// The override starts as the asset's own order, so a single move lands
@@ -180,8 +181,9 @@ fn show_and_hide_edit_the_include_list() {
 // The children that actually render
 // ---------------------------------------------------------------- //
 
-/// Three one-pixel layers, written bottom-to-top as Aseprite stores them.
-fn stack() -> Fixture {
+/// Three one-pixel layers with cels, written bottom-to-top as Aseprite
+/// stores them — enough for the texture to spawn a child per layer.
+fn render_stack() -> Fixture {
     Fixture {
         canvas: (1, 1),
         frames: 1,
@@ -205,7 +207,7 @@ fn stack() -> Fixture {
 
 /// Steps the app until the texture has spawned its layer children.
 fn spawn_stack(name: &str, tex: AseTexture) -> (App, Entity, Aseprite) {
-    let (mut app, handles) = support::load_with(name, &stack(), &[""], AsepriteUltraPlugin);
+    let (mut app, handles) = support::load_with(name, &render_stack(), &[""], AsepriteUltraPlugin);
     let aseprite = app
         .world()
         .resource::<Assets<Aseprite>>()

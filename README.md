@@ -9,7 +9,7 @@ rendering, and custom materials.
 
 | Bevy Version | Plugin Version |
 | -----------: | -------------: |
-|         0.18 |         0.10.0 |
+|         0.18 |         0.11.0 |
 |         0.17 |          0.7.0 |
 |         0.16 |          0.6.1 |
 |         0.15 |          0.4.1 |
@@ -411,18 +411,10 @@ fn swap_layers(
 }
 ```
 
-To modify the order globally on the asset itself (affecting all entities
-that use it), use `Aseprite::reorder_layer`:
-
-```rust
-# use bevy::prelude::*;
-# use bevy_aseprite_ultra::prelude::*;
-fn reorder_on_asset(mut assets: ResMut<Assets<Aseprite>>) {
-    for (_, aseprite) in assets.iter_mut() {
-        aseprite.reorder_layer(LayerId::new("swoosh"), 0); // move to front
-    }
-}
-```
+Order and visibility are per entity. The asset carries the order the file
+was authored with, and each `AseTexture` overrides it for itself — there is
+no asset-level mutator, because nothing re-reads the asset once an entity
+has spawned its layer children.
 
 You can also set `layer_order` at spawn time via the builder:
 

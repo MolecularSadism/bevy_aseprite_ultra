@@ -20,11 +20,11 @@ pub mod prelude {
         ManualTick, NextFrame, PlayDirection, RenderAnimation, emit_animation_frame_changed,
         render_children_animation, resolve_frame,
     };
+    pub use crate::error::AsepriteError;
     pub use crate::layers::{
         AseFlip, AseRenderTarget, AseTexture, LayerEntry, LayerFilter, LayerId, SliceId,
         SpriteLayerOf, SpriteLayers,
     };
-    pub use crate::error::AsepriteError;
     pub use crate::loader::{
         Aseprite, AsepriteLoader, AsepriteLoaderPlugin, AsepriteLoaderSettings, SliceKeyMeta,
         SliceMeta, TagMeta,
