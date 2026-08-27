@@ -709,12 +709,14 @@ pub fn update_aseprite_animation(
         // Mirror the animation's tag into AseTag (when present) so the renderer
         // can resolve tag-relative frames consistently. AseFrame is treated as
         // tag-relative on this entity.
+        //
+        // `set_if_neq` rather than a compare behind `as_deref_mut`: reaching
+        // the tag through `DerefMut` flags the component before anything has
+        // looked at it, and every renderer resolving a tag-relative frame
+        // watches that flag.
         let has_tag = ase_tag.is_some();
-        if let Some(tag) = ase_tag.as_deref_mut() {
-            let desired = animation.tag.unwrap_or_default();
-            if tag.0 != desired {
-                tag.0 = desired;
-            }
+        if let Some(tag) = ase_tag.as_mut() {
+            tag.set_if_neq(AseTag(animation.tag.unwrap_or_default()));
         }
 
         // Working range/index: absolute when no AseTag, relative when AseTag is present.
@@ -804,8 +806,14 @@ pub fn update_aseprite_animation(
 
         if state.elapsed > *frame_duration {
             cmd.trigger(NextFrame { entity });
-            state.elapsed =
-                Duration::from_secs_f32(state.elapsed.as_secs_f32() % frame_duration.as_secs_f32());
+            // A frame the file gives no duration carries nothing into the next
+            // one: the remainder is `elapsed % 0`, and `Duration` refuses the
+            // `NaN` that produces.
+            state.elapsed = if frame_duration.is_zero() {
+                Duration::ZERO
+            } else {
+                Duration::from_secs_f32(state.elapsed.as_secs_f32() % frame_duration.as_secs_f32())
+            };
         }
     }
 }
@@ -1352,6 +1360,71 @@ mod tests {
         assert_eq!(
             app.world().get::<AseTag>(entity).map(|tag| tag.0),
             Some(TagId::new("Rock")),
+        );
+    }
+
+    /// A frame the file gives no duration is stepped past, not divided by.
+    ///
+    /// The remainder carried into the next frame is `elapsed % duration`, which
+    /// for a zero duration is `NaN` — and `Duration::from_secs_f32` panics on
+    /// that, taking the game down over a frame an artist left at zero.
+    #[test]
+    fn a_zero_duration_frame_steps_instead_of_panicking() {
+        let mut ase = test_aseprite();
+        ase.frame_durations = vec![Duration::ZERO; 4];
+        let (mut app, handle) = plugin_app(ase, 16);
+        let entity = app
+            .world_mut()
+            .spawn((AseAnimation::default(), AnimationLayer::new(handle)))
+            .id();
+
+        let frames: Vec<u16> = (0..4)
+            .map(|_| {
+                app.update();
+                app.world().get::<AseFrame>(entity).expect("the frame").0
+            })
+            .collect();
+
+        // Nothing holds a frame with no duration, so each tick moves one on.
+        assert_eq!(frames, vec![0, 1, 2, 3]);
+    }
+
+    /// The mirror leaves `AseTag` alone once it already names the playing tag.
+    ///
+    /// Every renderer that resolves a tag-relative frame watches this component
+    /// for change, so flagging it on a tick that wrote nothing re-renders every
+    /// animated entity in the world for as long as it plays.
+    #[test]
+    fn the_mirror_does_not_touch_a_tag_that_already_matches() {
+        #[derive(Resource, Default)]
+        struct Flagged(usize);
+
+        fn count_flagged(mut flagged: ResMut<Flagged>, tags: Query<(), Changed<AseTag>>) {
+            flagged.0 += tags.iter().count();
+        }
+
+        let (mut app, handle) = plugin_app(tagged_aseprite(), 120);
+        app.init_resource::<Flagged>();
+        app.add_systems(Last, count_flagged);
+        app.world_mut().spawn((
+            AseAnimation::tag("Rock"),
+            AseTag::new("stale"),
+            AnimationLayer::new(handle),
+        ));
+
+        // The first tick writes the tag the animation actually plays, so one
+        // report is the spawn plus that correction.
+        app.update();
+        let after_first = app.world().resource::<Flagged>().0;
+
+        // Every tick after it agrees with the animation and has nothing to say.
+        for _ in 0..4 {
+            app.update();
+        }
+        assert_eq!(
+            app.world().resource::<Flagged>().0,
+            after_first,
+            "the mirror flagged AseTag on a tick that wrote nothing",
         );
     }
 

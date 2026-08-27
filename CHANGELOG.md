@@ -1,3 +1,16 @@
+## 0.11.1
+
+- **The tag mirror stops flagging `AseTag` on every tick.** The tick system
+  compared the tag before writing it, but reached it through `DerefMut`, which
+  marks a component changed whether or not anything is written. Every renderer
+  that resolves a tag-relative frame watches that flag, so an animated entity
+  re-rendered its slice on each of its own ticks for as long as it played.
+- **A frame with no duration steps instead of panicking.** The remainder
+  carried into the next frame is `elapsed % duration`, which for a zero
+  duration is `NaN`, and `Duration::from_secs_f32` refuses that — so a frame an
+  artist left at zero took the process down from the tick system. Nothing holds
+  such a frame now; each tick moves one on.
+
 ## 0.11.0
 
 Breaking. The crate stops panicking on art it does not like, stops failing
