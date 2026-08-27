@@ -29,7 +29,7 @@ pub mod prelude {
     };
     pub use crate::loader::{
         Aseprite, AsepriteLoader, AsepriteLoaderPlugin, AsepriteLoaderSettings, SliceKeyMeta,
-        SliceMeta, TagMeta,
+        SliceMeta, SliceView, TagMeta,
     };
     pub use crate::slice::{AseSlice, RenderSlice, nine_patch_to_slicer, render_slice};
 }

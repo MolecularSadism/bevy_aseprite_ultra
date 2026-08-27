@@ -75,15 +75,10 @@ impl RenderAnimation for MyMaterial {
 
 impl RenderSlice for MyMaterial {
     type Extra<'e> = Res<'e, Time>;
-    fn render_slice(
-        &mut self,
-        aseprite: &Aseprite,
-        slice_meta: &SliceMeta,
-        extra: &mut Self::Extra<'_>,
-    ) {
+    fn render_slice(&mut self, aseprite: &Aseprite, slice: SliceView, extra: &mut Self::Extra<'_>) {
         self.image = aseprite.atlas_image().clone();
-        self.texture_min = slice_meta.rect.min.as_uvec2();
-        self.texture_max = slice_meta.rect.max.as_uvec2();
+        self.texture_min = slice.rect.min.as_uvec2();
+        self.texture_max = slice.rect.max.as_uvec2();
         self.time = extra.elapsed_secs();
     }
 }

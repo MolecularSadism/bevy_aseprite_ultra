@@ -7,7 +7,7 @@
 mod support;
 
 use bevy::prelude::*;
-use bevy::sprite::BorderRect;
+use bevy::sprite::{Anchor, BorderRect};
 use bevy_aseprite_ultra::prelude::*;
 use support::{Cel, Fixture, Layer, Slice, SliceKey};
 
@@ -164,4 +164,52 @@ fn an_ase_slice_on_an_unloaded_sheet_resolves_to_nothing() {
     assert!(dangling.meta(aseprites).is_none());
     assert!(dangling.size(aseprites).is_none());
     assert!(dangling.border(aseprites).is_none());
+}
+
+/// A slice whose rect collapsed to nothing on some frame still carries the
+/// pivot the artist set, and dividing by that empty rect is what an anchor is
+/// built from.
+fn collapsed(rect: Rect) -> Aseprite {
+    Aseprite::builder()
+        .with_slice_meta(
+            "Collapsed",
+            SliceMeta {
+                rect,
+                atlas_id: 0,
+                pivot: Some(Vec2::new(2.0, 2.0)),
+                nine_patch: None,
+                keys: Vec::new(),
+                frame_atlas_ids: Vec::new(),
+            },
+        )
+        .build()
+}
+
+#[test]
+fn a_zero_area_slice_anchors_at_its_centre() {
+    for rect in [
+        Rect::new(0.0, 0.0, 0.0, 0.0),
+        Rect::new(4.0, 4.0, 4.0, 12.0),
+        Rect::new(4.0, 4.0, 12.0, 4.0),
+    ] {
+        let aseprite = collapsed(rect);
+        let meta = aseprite.slice("Collapsed").expect("the slice that went in");
+        let anchor = Anchor::from(meta);
+
+        assert!(
+            anchor.0.is_finite(),
+            "a {rect:?} slice anchored at {:?}",
+            anchor.0,
+        );
+        assert_eq!(anchor, Anchor::CENTER);
+    }
+}
+
+/// A pivot on a slice with area still places the anchor.
+#[test]
+fn a_pivot_places_the_anchor_within_the_slice() {
+    let aseprite = collapsed(Rect::new(0.0, 0.0, 8.0, 8.0));
+    let meta = aseprite.slice("Collapsed").expect("the slice that went in");
+
+    assert_eq!(Anchor::from(meta), Anchor(Vec2::new(-0.25, 0.25)));
 }

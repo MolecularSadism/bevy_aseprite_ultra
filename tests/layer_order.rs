@@ -337,3 +337,71 @@ fn show_layer_brings_a_hidden_child_back() {
 
     assert_eq!(visibility_of(&mut app, parent, b), Visibility::Inherited);
 }
+
+/// The z each of `parent`'s layer children draws at, front first.
+fn depths(app: &mut App, parent: Entity) -> Vec<(LayerId, f32)> {
+    let world = app.world_mut();
+    let mut query = world.query::<(&LayerId, &Transform, &SpriteLayerOf)>();
+    let mut children: Vec<(LayerId, f32)> = query
+        .iter(world)
+        .filter(|(_, _, of)| of.0 == parent)
+        .map(|(id, transform, _)| (*id, transform.translation.z))
+        .collect();
+    children.sort_by(|a, b| b.1.total_cmp(&a.1));
+    children
+}
+
+/// Two children at one depth have no order between them, so whichever the
+/// renderer reaches first wins.
+fn assert_distinct(depths: &[(LayerId, f32)]) {
+    for pair in depths.windows(2) {
+        assert!(
+            pair[0].1 > pair[1].1,
+            "{:?} and {:?} share a depth",
+            pair[0],
+            pair[1],
+        );
+    }
+}
+
+/// An override that names one layer still has to leave the rest in an order.
+#[test]
+fn an_override_stacks_the_layers_it_leaves_out_behind_the_ones_it_names() {
+    let (mut app, parent, _) = spawn_stack(
+        "layer_order_partial",
+        AseTexture::new(Handle::default()).with_layer_order(vec![LayerId::new("a")]),
+    );
+
+    let depths = depths(&mut app, parent);
+    assert_distinct(&depths);
+    assert_eq!(
+        depths.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![LayerId::new("a"), LayerId::new("c"), LayerId::new("b")],
+        "the named layer draws in front, the rest keep the file's order behind it",
+    );
+}
+
+/// An override may name layers the file does not have — a list written for a
+/// sheet before an artist deleted a layer from it. The layers it does have
+/// still stack in the order it gives them.
+#[test]
+fn an_override_longer_than_the_file_keeps_its_front_in_front() {
+    let order = vec![
+        LayerId::new("x"),
+        LayerId::new("y"),
+        LayerId::new("c"),
+        LayerId::new("b"),
+        LayerId::new("a"),
+    ];
+    let (mut app, parent, _) = spawn_stack(
+        "layer_order_long",
+        AseTexture::new(Handle::default()).with_layer_order(order),
+    );
+
+    let depths = depths(&mut app, parent);
+    assert_distinct(&depths);
+    assert_eq!(
+        depths.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![LayerId::new("c"), LayerId::new("b"), LayerId::new("a")],
+    );
+}

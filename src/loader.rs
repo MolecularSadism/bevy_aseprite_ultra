@@ -8,6 +8,7 @@ use aseprite_loader::{
 use bevy::{
     asset::{AssetLoader, RenderAssetUsages, io::Reader},
     image::ImageSampler,
+    log::warn_once,
     platform::collections::HashMap,
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
@@ -222,10 +223,20 @@ pub struct SliceKeyMeta {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "asset_processing", derive(Serialize, Deserialize))]
 pub struct SliceMeta {
+    /// The slice's rectangle as its first key sets it, in canvas coordinates.
     pub rect: Rect,
+    /// Where the slice's frame-0 crop sits in the packed atlas. A loaded
+    /// slice always names an entry that is there: a variant with no frames
+    /// registers no slices at all.
     pub atlas_id: usize,
+    /// The pivot the artist set, in slice-local pixels.
     pub pivot: Option<Vec2>,
+    /// The nine-patch centre every frame falls back to, as Aseprite's own
+    /// `Vec4(x, y, width, height)`. The loader keeps only a centre that fits
+    /// [`Self::rect`]; [`Self::border`] measures any other against it and
+    /// yields nothing.
     pub nine_patch: Option<Vec4>,
+    /// The slice's own timeline, one entry per key the file defines.
     pub keys: Vec<SliceKeyMeta>,
     /// The slice's own atlas position for each frame of its aseprite variant
     /// (composite/all/per-layer), parallel to the variant's own frame list.
@@ -248,15 +259,30 @@ impl SliceMeta {
         self.rect.size()
     }
 
-    /// The nine-patch border insets, or `None` when the slice has no centre.
+    /// The nine-patch border insets, or `None` when the slice has no centre —
+    /// or one that does not fit it.
     ///
     /// The file stores the centre rectangle; the insets are the distance from
-    /// each edge to it. The loader drops centres that do not fit the slice, so
-    /// these are never negative.
+    /// each edge to it. A centre reaching past an edge would put that inset
+    /// behind the edge it is measured from, which no slicer can draw, so it
+    /// yields no border at all. These are never negative.
     #[must_use]
     pub fn border(&self) -> Option<BorderRect> {
-        self.nine_patch
-            .map(|np| crate::slice::nine_patch_to_slicer(np, self.rect.size()).border)
+        SliceView::from(self).border()
+    }
+
+    /// This slice as it draws on `frame`: that frame's atlas position, and the
+    /// rect, pivot and centre its own key sets, each falling back to the
+    /// slice's when the key leaves it unset.
+    #[must_use]
+    pub fn view_at_frame(&self, frame: usize) -> SliceView {
+        let key = self.keys.iter().find(|key| key.frame == frame);
+        SliceView {
+            rect: key.map_or(self.rect, |key| key.rect),
+            atlas_id: self.atlas_id_for_frame(frame),
+            pivot: key.and_then(|key| key.pivot).or(self.pivot),
+            nine_patch: key.and_then(|key| key.nine_patch).or(self.nine_patch),
+        }
     }
 
     /// This slice's atlas position for a specific absolute frame number.
@@ -273,16 +299,82 @@ impl SliceMeta {
     }
 }
 
+/// One slice as it draws on one frame: the geometry a render target needs,
+/// and nothing of the timeline it was taken from.
+///
+/// A [`SliceMeta`] carries a slice's whole timeline; what a renderer draws is
+/// a single frame of it, so [`RenderSlice`](crate::slice::RenderSlice) is
+/// handed this instead — a copy small enough to pass by value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SliceView {
+    /// The slice's rectangle on this frame, in canvas coordinates.
+    pub rect: Rect,
+    /// Where this frame's crop of the slice sits in the packed atlas.
+    pub atlas_id: usize,
+    /// The pivot the artist set, in slice-local pixels.
+    pub pivot: Option<Vec2>,
+    /// The nine-patch centre, as Aseprite's own `Vec4(x, y, width, height)`.
+    pub nine_patch: Option<Vec4>,
+}
+
+impl SliceView {
+    /// The slice's size in pixels on this frame.
+    #[must_use]
+    pub fn size(&self) -> Vec2 {
+        self.rect.size()
+    }
+
+    /// The nine-patch border insets, or `None` when this frame has no centre —
+    /// or one that does not fit the rect it is measured against.
+    #[must_use]
+    pub fn border(&self) -> Option<BorderRect> {
+        centre_insets(self.nine_patch?, self.rect.size())
+    }
+}
+
+/// The frame-0 view of a slice: its own rect, atlas position and annotations,
+/// before any key of its timeline is layered on top.
+impl From<&SliceMeta> for SliceView {
+    fn from(value: &SliceMeta) -> Self {
+        SliceView {
+            rect: value.rect,
+            atlas_id: value.atlas_id,
+            pivot: value.pivot,
+            nine_patch: value.nine_patch,
+        }
+    }
+}
+
+/// The insets a centre leaves in a slice of `size`, or `None` when the centre
+/// does not fit: an inset reaching back past the edge it is measured from
+/// describes no border.
+fn centre_insets(centre: Vec4, size: Vec2) -> Option<BorderRect> {
+    let border = crate::slice::nine_patch_to_slicer(centre, size).border;
+    (border.min_inset.cmpge(Vec2::ZERO).all() && border.max_inset.cmpge(Vec2::ZERO).all())
+        .then_some(border)
+}
+
+impl From<SliceView> for Anchor {
+    fn from(value: SliceView) -> Self {
+        let Some(pivot) = value.pivot else {
+            return Anchor::CENTER;
+        };
+        let size = value.rect.size();
+        if size.x <= 0.0 || size.y <= 0.0 {
+            warn_once!(
+                "a slice with a pivot has no area ({size:?}), so the pivot divides nothing; \
+                 anchoring at its centre. Give the slice key a width and a height in Aseprite.",
+            );
+            return Anchor::CENTER;
+        }
+        let uv = (pivot.min(size).max(Vec2::ZERO) / size) - Vec2::new(0.5, 0.5);
+        Anchor(uv * Vec2::new(1.0, -1.0))
+    }
+}
+
 impl From<&SliceMeta> for Anchor {
     fn from(value: &SliceMeta) -> Self {
-        match value.pivot {
-            Some(pivot) => {
-                let size = value.rect.size();
-                let uv = (pivot.min(size).max(Vec2::ZERO) / size) - Vec2::new(0.5, 0.5);
-                Anchor(uv * Vec2::new(1.0, -1.0))
-            }
-            None => Anchor::CENTER,
-        }
+        Anchor::from(SliceView::from(value))
     }
 }
 
@@ -561,16 +653,6 @@ impl AssetLoader for AsepriteLoader {
         // Collect slice metadata without atlas IDs; each variant (composite,
         // all, per-layer) computes its own atlas IDs relative to its frame
         // position in the packed atlas.
-        struct RawSlice {
-            name: String,
-            rect: Rect,
-            canvas_min: UVec2,
-            canvas_max: UVec2,
-            pivot: Option<Vec2>,
-            nine_patch: Option<Vec4>,
-            keys: Vec<SliceKeyMeta>,
-        }
-
         // A centre with no area cannot divide anything, and one reaching past
         // the key's own bounds would invert an inset; neither describes a
         // nine-patch, so both read as "this key sets no centre" rather than as
@@ -636,12 +718,32 @@ impl AssetLoader for AsepriteLoader {
                 // A key written before its centre was dragged out carries an
                 // empty one. Every frame of the slice falls back to the first
                 // centre that is actually a centre, so a partly-annotated
-                // timeline slices the same way from end to end.
-                let nine_patch = keys.iter().find_map(|key| key.nine_patch);
+                // timeline slices the same way from end to end. The slice's
+                // own rect is the first key's, so a centre set on a key of
+                // some other size carries over only if it fits that rect too.
+                let rect = Rect::from_corners(min, max);
+                let nine_patch = keys.iter().find_map(|key| key.nine_patch).filter(|centre| {
+                    let fits = centre_insets(*centre, rect.size()).is_some();
+                    if !fits {
+                        warn!(
+                            "slice {:?} in {source_path}: the centre ({}, {}, {}x{}) one of its \
+                             keys sets does not fit the slice's own {}x{} bounds. Ignoring it; \
+                             the frames setting no centre of their own draw unsliced.",
+                            slice.name,
+                            centre.x,
+                            centre.y,
+                            centre.z,
+                            centre.w,
+                            rect.width(),
+                            rect.height(),
+                        );
+                    }
+                    fits
+                });
 
                 Some(RawSlice {
                     name: slice.name.to_owned(),
-                    rect: Rect::from_corners(min, max),
+                    rect,
                     canvas_min: min.as_uvec2(),
                     canvas_max: max.as_uvec2(),
                     pivot,
@@ -651,51 +753,13 @@ impl AssetLoader for AsepriteLoader {
             })
             .collect();
 
-        // Build a SliceMeta map for a specific variant by offsetting each of
-        // its frames' canvas-relative slice rects to that frame's position in
-        // the packed atlas. A slice's canvas rect is the same across every
-        // frame (it's defined once, in canvas coordinates); only the
-        // underlying frame image being cropped changes, so this registers one
-        // atlas entry per frame, mirroring `frame_indices` (see
-        // `SliceMeta::atlas_id_for_frame`).
-        let build_slices =
-            |indices: &[usize], layout: &mut TextureAtlasLayout| -> HashMap<SliceId, SliceMeta> {
-                raw_slice_data
-                    .iter()
-                    .map(|raw| {
-                        let frame_atlas_ids: Vec<usize> = indices
-                            .iter()
-                            .map(|&frame_index| {
-                                let frame_rect = layout.textures[frame_index];
-                                let atlas_rect = URect::from_corners(
-                                    frame_rect.min + raw.canvas_min,
-                                    frame_rect.min + raw.canvas_max,
-                                );
-                                layout.add_texture(atlas_rect)
-                            })
-                            .collect();
-                        (
-                            SliceId::new(&raw.name),
-                            SliceMeta {
-                                rect: raw.rect,
-                                atlas_id: frame_atlas_ids.first().copied().unwrap_or_default(),
-                                pivot: raw.pivot,
-                                nine_patch: raw.nine_patch,
-                                keys: raw.keys.clone(),
-                                frame_atlas_ids,
-                            },
-                        )
-                    })
-                    .collect()
-            };
-
-        let composite_slices = build_slices(&composite_indices, &mut layout);
-        let all_slices = build_slices(&all_indices, &mut layout);
+        let composite_slices = build_slices(&raw_slice_data, &composite_indices, &mut layout);
+        let all_slices = build_slices(&raw_slice_data, &all_indices, &mut layout);
 
         let mut per_layer_data: Vec<(LayerId, Vec<usize>, HashMap<SliceId, SliceMeta>)> =
             Vec::new();
         for (layer_id, layer_indices) in per_layer_resolved {
-            let slices = build_slices(&layer_indices, &mut layout);
+            let slices = build_slices(&raw_slice_data, &layer_indices, &mut layout);
             per_layer_data.push((layer_id, layer_indices, slices));
         }
 
@@ -704,17 +768,39 @@ impl AssetLoader for AsepriteLoader {
         let atlas_image = load_context.add_labeled_asset("atlas_texture".into(), image);
 
         // ---------------------------- tags
+        // A tag keeps the range it was authored with, so deleting frames in
+        // Aseprite leaves it covering frames the file no longer has. Clamping
+        // here keeps every frame a tag can name one the file can time and
+        // draw.
         let mut tags = HashMap::new();
-        raw.tags().iter().for_each(|tag| {
+        for tag in raw.tags() {
+            let (start, end) = (*tag.range.start(), *tag.range.end());
+            if num_frames == 0 {
+                warn!(
+                    "tag {:?} in {source_path} covers frames {start}..={end} of a file with no \
+                     frames, and was skipped.",
+                    tag.name,
+                );
+                continue;
+            }
+            let last = u16::try_from(num_frames - 1).unwrap_or(u16::MAX);
+            if end > last {
+                warn!(
+                    "tag {:?} in {source_path} covers frames {start}..={end}, but the file has \
+                     {num_frames} frames. Clamping it to {}..={last}; re-tag it in Aseprite.",
+                    tag.name,
+                    start.min(last),
+                );
+            }
             tags.insert(
                 TagId::new(&tag.name),
                 TagMeta {
                     direction: tag.direction.into(),
-                    range: tag.range.clone(),
+                    range: start.min(last)..=end.min(last),
                     repeat: tag.repeat.unwrap_or(0),
                 },
             );
-        });
+        }
 
         // ---------------------------- frames
         let frame_durations: Vec<std::time::Duration> = raw
@@ -752,5 +838,130 @@ impl AssetLoader for AsepriteLoader {
 
     fn extensions(&self) -> &[&str] {
         &["aseprite", "ase"]
+    }
+}
+
+/// A slice as the file describes it, before any variant places it in the
+/// packed atlas.
+struct RawSlice {
+    name: String,
+    rect: Rect,
+    canvas_min: UVec2,
+    canvas_max: UVec2,
+    pivot: Option<Vec2>,
+    nine_patch: Option<Vec4>,
+    keys: Vec<SliceKeyMeta>,
+}
+
+/// Builds a [`SliceMeta`] map for one variant by offsetting each of its
+/// frames' canvas-relative slice rects to that frame's position in the packed
+/// atlas.
+///
+/// A slice's canvas rect is the same across every frame — it is defined once,
+/// in canvas coordinates; only the underlying frame image being cropped
+/// changes — so this registers one atlas entry per frame, mirroring the
+/// variant's `frame_indices` (see [`SliceMeta::atlas_id_for_frame`]). A
+/// variant with no frames has no atlas entry for a slice to crop into, so it
+/// registers no slices.
+fn build_slices(
+    raw_slices: &[RawSlice],
+    indices: &[usize],
+    layout: &mut TextureAtlasLayout,
+) -> HashMap<SliceId, SliceMeta> {
+    raw_slices
+        .iter()
+        .filter_map(|raw| {
+            let frame_atlas_ids: Vec<usize> = indices
+                .iter()
+                .map(|&frame_index| {
+                    let frame_rect = layout.textures[frame_index];
+                    let atlas_rect = URect::from_corners(
+                        frame_rect.min + raw.canvas_min,
+                        frame_rect.min + raw.canvas_max,
+                    );
+                    layout.add_texture(atlas_rect)
+                })
+                .collect();
+            Some((
+                SliceId::new(&raw.name),
+                SliceMeta {
+                    rect: raw.rect,
+                    atlas_id: *frame_atlas_ids.first()?,
+                    pivot: raw.pivot,
+                    nine_patch: raw.nine_patch,
+                    keys: raw.keys.clone(),
+                    frame_atlas_ids,
+                },
+            ))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn panel() -> Vec<RawSlice> {
+        vec![RawSlice {
+            name: "Panel".to_owned(),
+            rect: Rect::new(0.0, 0.0, 8.0, 8.0),
+            canvas_min: UVec2::ZERO,
+            canvas_max: UVec2::splat(8),
+            pivot: None,
+            nine_patch: None,
+            keys: Vec::new(),
+        }]
+    }
+
+    /// Every slice handed out names an atlas entry that is really there, so
+    /// `atlas_id` is frame 0's own position.
+    #[test]
+    fn a_slices_atlas_id_is_its_first_frames_own_entry() {
+        let mut layout = TextureAtlasLayout::new_empty(UVec2::splat(16));
+        let frame = layout.add_texture(URect::new(0, 0, 8, 8));
+
+        let slices = build_slices(&panel(), &[frame], &mut layout);
+        let panel = slices.get(&SliceId::new("Panel")).expect("one slice");
+
+        assert_eq!(panel.atlas_id, panel.frame_atlas_ids[0]);
+        assert_eq!(layout.textures[panel.atlas_id], URect::new(0, 0, 8, 8));
+    }
+
+    /// A variant with no frames has nowhere for a slice to crop into, so it
+    /// hands out no slice rather than one pointing at index 0.
+    #[test]
+    fn a_variant_with_no_frames_registers_no_slices() {
+        let mut layout = TextureAtlasLayout::new_empty(UVec2::splat(16));
+
+        assert!(build_slices(&panel(), &[], &mut layout).is_empty());
+    }
+
+    /// The view a frame draws takes that frame's own key, and falls back to
+    /// the slice's for what the key leaves unset.
+    #[test]
+    fn a_frames_view_layers_its_key_over_the_slice() {
+        let meta = SliceMeta {
+            rect: Rect::new(0.0, 0.0, 8.0, 8.0),
+            atlas_id: 4,
+            pivot: Some(Vec2::splat(2.0)),
+            nine_patch: Some(Vec4::new(1.0, 1.0, 6.0, 6.0)),
+            keys: vec![SliceKeyMeta {
+                frame: 1,
+                rect: Rect::new(0.0, 0.0, 4.0, 4.0),
+                pivot: None,
+                nine_patch: Some(Vec4::new(1.0, 1.0, 2.0, 2.0)),
+            }],
+            frame_atlas_ids: vec![4, 5],
+        };
+
+        let unkeyed = meta.view_at_frame(0);
+        assert_eq!(unkeyed, SliceView::from(&meta));
+
+        let keyed = meta.view_at_frame(1);
+        assert_eq!(keyed.rect, Rect::new(0.0, 0.0, 4.0, 4.0));
+        assert_eq!(keyed.atlas_id, 5, "the frame's own atlas position");
+        assert_eq!(keyed.pivot, meta.pivot, "the key sets none of its own");
+        assert_eq!(keyed.nine_patch, Some(Vec4::new(1.0, 1.0, 2.0, 2.0)));
+        assert_eq!(keyed.border(), Some(BorderRect::all(1.0)));
     }
 }

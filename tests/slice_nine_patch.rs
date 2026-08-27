@@ -82,6 +82,94 @@ fn an_empty_centre_falls_back_to_the_one_the_slice_defines() {
         Some(expected),
         "frame 1 keeps the centre it sets",
     );
+    assert_eq!(
+        slice.border(),
+        Some(BorderRect {
+            min_inset: Vec2::splat(2.0),
+            max_inset: Vec2::splat(2.0),
+        }),
+        "the fallback centre divides the slice it was measured against",
+    );
+}
+
+/// A slice an artist resized across its timeline keeps the first key's rect,
+/// so a centre a later, larger key sets does not describe it — the insets it
+/// would give run past the edges it is measured against.
+fn resized_across_the_timeline() -> Fixture {
+    let mut fixture = partly_annotated();
+    fixture.slices[0].keys[1].bounds = (0, 0, 32, 32);
+    fixture.slices[0].keys[1].centre = Some((4, 4, 24, 24));
+    fixture
+}
+
+#[test]
+fn a_centre_from_a_larger_key_does_not_border_a_smaller_slice() {
+    let (app, handles) = support::load("nine_patch_resized", &resized_across_the_timeline(), &[""]);
+    let aseprites = app.world().resource::<Assets<Aseprite>>();
+    let slice = aseprites
+        .get(&handles[0])
+        .expect("composite loaded")
+        .slice("Panel")
+        .expect("Panel slice")
+        .clone();
+
+    assert_eq!(
+        slice.size(),
+        Vec2::splat(8.0),
+        "the slice's rect is the first key's",
+    );
+    assert_eq!(
+        slice.nine_patch, None,
+        "a 24x24 centre cannot divide an 8x8 slice",
+    );
+    assert_eq!(
+        slice.border(),
+        None,
+        "no border rather than one reaching back past its own edges",
+    );
+    assert_eq!(
+        slice.keys[1].nine_patch,
+        Some(Vec4::new(4.0, 4.0, 24.0, 24.0)),
+        "the key that sets the centre is 32x32 and keeps it",
+    );
+}
+
+/// The frame the larger key covers is drawn at that key's own size, so the
+/// centre it sets borders it there.
+#[test]
+fn the_larger_keys_own_frame_still_nine_slices() {
+    let (mut app, handles) = support::load_with(
+        "nine_patch_resized_frame",
+        &resized_across_the_timeline(),
+        &[""],
+        AsepriteUltraPlugin,
+    );
+    let node = app
+        .world_mut()
+        .spawn((
+            ImageNode::default(),
+            AseSlice::new(handles[0].clone(), "Panel"),
+            AseFrame(1),
+        ))
+        .id();
+    app.update();
+
+    let NodeImageMode::Sliced(slicer) = app
+        .world()
+        .get::<ImageNode>(node)
+        .unwrap()
+        .image_mode
+        .clone()
+    else {
+        panic!("the frame's own key sets a centre");
+    };
+    assert_eq!(
+        slicer.border,
+        BorderRect {
+            min_inset: Vec2::splat(4.0),
+            max_inset: Vec2::splat(4.0),
+        },
+    );
 }
 
 #[test]

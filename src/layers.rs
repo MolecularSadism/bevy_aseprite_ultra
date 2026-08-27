@@ -2,6 +2,7 @@ use crate::animation::{AnimationLayer, AseFrame};
 use crate::loader::Aseprite;
 use crate::slice::AseSlice;
 use bevy::camera::visibility::RenderLayers;
+use bevy::ecs::system::SystemParam;
 use bevy::image::TextureAtlas;
 use bevy::prelude::*;
 use bevy::sprite::TextureSlicer;
@@ -39,7 +40,7 @@ impl Plugin for AsepriteLayersPlugin {
         app.add_systems(
             PreUpdate,
             (
-                spawn_layers_on_asset_load,
+                sync_layers_with_asset,
                 update_layers,
                 propagate_flip,
                 propagate_offset,
@@ -137,9 +138,10 @@ pub struct SpriteLayers(Vec<Entity>);
 ///
 /// In layered mode **all** layers from the aseprite file are always spawned as
 /// children. The [`layers`](AseTexture::layers) filter only controls which
-/// children are visible; it does not affect which entities exist. This avoids
-/// entity churn when switching visibility rapidly and makes z-ordering stable
-/// (set once at spawn time, never recalculated).
+/// children are visible; it does not affect which entities exist. Editing the
+/// component reaches the children it already has, in either mode, so what a
+/// game attached to one survives the edit; children are replaced only when
+/// the file's own layer set changes.
 ///
 /// Add [`AseAnimation`](crate::animation::AseAnimation) alongside this
 /// component to opt into animation ticking. Without it, children are fully
@@ -186,8 +188,9 @@ pub struct AseTexture {
     pub offset: Vec2,
     /// Per-entity layer order override. When `Some`, layers are z-ordered
     /// according to this list (index 0 = front, renders on top) instead of
-    /// the asset's default order. Layers not in this list keep their
-    /// asset-default z-position. Set to `None` to use the asset order.
+    /// the asset's default order. Layers the list leaves out draw behind
+    /// every layer it names, in the asset's own order. Set to `None` to use
+    /// the asset order.
     pub layer_order: Option<Vec<LayerId>>,
 }
 
@@ -377,15 +380,29 @@ impl<'a> LayerPlan<'a> {
         }
     }
 
-    /// Front-to-back index 0 gets the highest z so it renders on top. A layer
-    /// the order override does not name sits at the back.
-    fn z(&self, layer: LayerId) -> usize {
-        let index = match self.order {
-            Some(order) => order.iter().position(|id| *id == layer),
-            None => self.entries.iter().position(|entry| entry.id == layer),
+    /// The depth a layer's child draws at, counting up towards the front, or
+    /// `None` for a layer this file does not have.
+    ///
+    /// Both orders read front to back, index 0 first. A layer an order
+    /// override leaves out draws behind every layer it names, holding its
+    /// place among the other layers left out.
+    fn z(&self, layer: LayerId) -> Option<usize> {
+        let asset_index = self.entries.iter().position(|entry| entry.id == layer)?;
+        let Some(order) = self.order else {
+            return Some(self.entries.len() - 1 - asset_index);
         };
-        index.map_or(0, |index| {
-            self.entries.len().saturating_sub(1).saturating_sub(index)
+        let left_out = |entry: &&LayerEntry| !order.contains(&entry.id);
+        Some(match order.iter().position(|id| *id == layer) {
+            Some(index) => {
+                let behind = self.entries.iter().filter(left_out).count();
+                behind + order.len() - 1 - index
+            }
+            // Entries run front to back, so the ones after this layer are the
+            // ones it draws in front of.
+            None => self.entries[asset_index + 1..]
+                .iter()
+                .filter(left_out)
+                .count(),
         })
     }
 
@@ -410,6 +427,15 @@ impl<'a> LayerPlan<'a> {
 /// its internal order without displacing where the parent as a whole sits.
 fn z_depth(z: usize) -> f32 {
     z as f32 * 0.001
+}
+
+/// A [`Val`] moved by `delta` logical pixels. A position given in anything
+/// but pixels has no pixel origin to move from and stays as its writer left it.
+fn moved(value: Val, delta: f32) -> Val {
+    match value {
+        Val::Px(px) => Val::Px(px + delta),
+        other => other,
+    }
 }
 
 /// An offset as a child must apply it: mirroring an axis mirrors the anchor
@@ -458,25 +484,187 @@ fn on_ase_texture_added(
     spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, flip);
 }
 
-/// Spawns children for entities whose asset was not yet loaded when the
-/// [`on_ase_texture_added`] observer fired. Only runs when an asset finishes
-/// loading, not every frame.
-fn spawn_layers_on_asset_load(
+/// The children's own components, as the paths that reconcile them write
+/// through. Gathered in one place so a system that touches children asks for
+/// one parameter rather than five.
+#[derive(SystemParam)]
+struct ChildViews<'w, 's> {
+    layer_ids: Query<'w, 's, &'static LayerId, With<SpriteLayerOf>>,
+    transforms: Query<'w, 's, &'static mut Transform, With<SpriteLayerOf>>,
+    z_indices: Query<'w, 's, &'static mut ZIndex, With<SpriteLayerOf>>,
+    sprites: Query<'w, 's, &'static mut Sprite, With<SpriteLayerOf>>,
+    image_nodes: Query<'w, 's, &'static mut ImageNode, With<SpriteLayerOf>>,
+    animations: Query<'w, 's, &'static mut AnimationLayer, With<SpriteLayerOf>>,
+}
+
+/// Whether the existing children are exactly one per layer of the file.
+///
+/// A layered texture keeps its children through every change but one: the
+/// file itself gaining, losing or renaming a layer.
+fn children_match(
+    sprite_layers: &SpriteLayers,
+    aseprite: &Aseprite,
+    layer_ids: &Query<&LayerId, With<SpriteLayerOf>>,
+) -> bool {
+    sprite_layers.iter().count() == aseprite.layers.len()
+        && sprite_layers.iter().all(|child| {
+            layer_ids
+                .get(child)
+                .is_ok_and(|id| aseprite.layers.iter().any(|entry| entry.id == *id))
+        })
+}
+
+/// Puts every existing layer child where the plan says: the filter decides
+/// whether it is visible, the order how deep it sits.
+fn apply_plan(
+    cmd: &mut Commands,
+    tex: &AseTexture,
+    aseprite: &Aseprite,
+    sprite_layers: &SpriteLayers,
+    views: &mut ChildViews,
+) {
+    let plan = LayerPlan::new(aseprite, tex);
+    for child in sprite_layers.iter() {
+        let Ok(&id) = views.layer_ids.get(child) else {
+            continue;
+        };
+        cmd.entity(child).insert(plan.visibility(id));
+
+        let z = plan.z(id).unwrap_or_default();
+        match tex.render_target {
+            AseRenderTarget::Sprite => {
+                if let Ok(mut transform) = views.transforms.get_mut(child) {
+                    transform.translation.z = z_depth(z);
+                }
+            }
+            AseRenderTarget::Ui => {
+                if let Ok(mut zi) = views.z_indices.get_mut(child) {
+                    zi.0 = z as i32;
+                }
+            }
+        }
+    }
+}
+
+/// Re-points a baked texture's composite child at what the component now
+/// says, in place, so whatever the game hung off that entity survives.
+///
+/// Returns `false` when there is nothing to reconcile — no single child, or
+/// one drawing through the other render target — and the caller must spawn a
+/// fresh one.
+fn reconcile_baked(
+    cmd: &mut Commands,
+    tex: &AseTexture,
+    aseprite: &Aseprite,
+    sprite_layers: &SpriteLayers,
+    views: &mut ChildViews,
+) -> bool {
+    let [child] = sprite_layers.0[..] else {
+        return false;
+    };
+    let (index, slicer) = initial_atlas(aseprite, tex.slice);
+    let atlas = Some(TextureAtlas {
+        layout: aseprite.atlas_layout().clone(),
+        index,
+    });
+
+    match tex.render_target {
+        AseRenderTarget::Sprite => {
+            let Ok(mut sprite) = views.sprites.get_mut(child) else {
+                return false;
+            };
+            sprite.image = aseprite.atlas_image().clone();
+            sprite.texture_atlas = atlas;
+            sprite.image_mode = match slicer {
+                Some(slicer) => SpriteImageMode::Sliced(slicer),
+                None => SpriteImageMode::Auto,
+            };
+        }
+        AseRenderTarget::Ui => {
+            let Ok(mut node) = views.image_nodes.get_mut(child) else {
+                return false;
+            };
+            node.image = aseprite.atlas_image().clone();
+            node.texture_atlas = atlas;
+            node.image_mode = match slicer {
+                Some(slicer) => NodeImageMode::Sliced(slicer),
+                None => NodeImageMode::Auto,
+            };
+        }
+    }
+
+    if let Ok(mut animation) = views.animations.get_mut(child)
+        && animation.aseprite != tex.aseprite
+    {
+        animation.aseprite = tex.aseprite.clone();
+    }
+    let mut child = cmd.entity(child);
+    match tex.slice {
+        Some(name) => {
+            child.insert(AseSlice {
+                name,
+                aseprite: tex.aseprite.clone(),
+            });
+        }
+        None => {
+            child.remove::<AseSlice>();
+        }
+    }
+    true
+}
+
+/// Keeps children in step with the asset behind them.
+///
+/// Spawns them for an entity whose asset was still loading when the
+/// [`on_ase_texture_added`] observer fired, and, when a reload replaces a file
+/// the children already came from, gives them the layer set, order and
+/// visibility the new file has. A layer set that changed shape needs a fresh
+/// set of children; one that only changed pixels keeps the ones it has.
+fn sync_layers_with_asset(
     mut cmd: Commands,
     mut events: MessageReader<AssetEvent<Aseprite>>,
-    query: Query<(Entity, &AseTexture, Option<&AseFlip>), Without<SpriteLayers>>,
+    query: Query<(Entity, &AseTexture, Option<&SpriteLayers>, Option<&AseFlip>)>,
+    mut views: ChildViews,
     assets: Res<Assets<Aseprite>>,
     server: Res<AssetServer>,
 ) {
+    // One pass per asset, not per event: the children a pass spawns are only
+    // visible to the query once the commands are applied, so a file that both
+    // loaded and changed this frame would otherwise be given two sets.
+    let mut changed: Vec<AssetId<Aseprite>> = Vec::new();
     for event in events.read() {
-        let AssetEvent::LoadedWithDependencies { id } = event else {
+        let (AssetEvent::LoadedWithDependencies { id } | AssetEvent::Modified { id }) = event
+        else {
             continue;
         };
-        for (entity, tex, flip) in &query {
-            if tex.aseprite.id() == *id {
-                let Some(aseprite) = assets.get(&tex.aseprite) else {
-                    continue;
-                };
+        if !changed.contains(id) {
+            changed.push(*id);
+        }
+    }
+
+    for id in changed {
+        for (entity, tex, sprite_layers, flip) in &query {
+            if tex.aseprite.id() != id {
+                continue;
+            }
+            let Some(aseprite) = assets.get(&tex.aseprite) else {
+                continue;
+            };
+            let Some(sprite_layers) = sprite_layers else {
+                spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, flip);
+                continue;
+            };
+            // A baked texture draws through one composite child whatever the
+            // file holds, and the render systems follow the atlas for it.
+            if tex.baked {
+                continue;
+            }
+            if children_match(sprite_layers, aseprite, &views.layer_ids) {
+                apply_plan(&mut cmd, tex, aseprite, sprite_layers, &mut views);
+            } else {
+                for child in sprite_layers.iter() {
+                    cmd.entity(child).despawn();
+                }
                 spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, flip);
             }
         }
@@ -485,19 +673,19 @@ fn spawn_layers_on_asset_load(
 
 /// Updates children when [`AseTexture`] changes.
 ///
-/// In layered mode (non-baked): all layer children are always kept alive.
-/// Their [`Visibility`] is toggled based on the current filter and z-ordering
-/// is updated from the per-entity [`layer_order`](AseTexture::layer_order)
-/// override (or asset default).
+/// Both modes reconcile the children they have rather than replacing them, so
+/// a material, a render layer or a marker the game attached to one survives an
+/// edit: layered children have their [`Visibility`] and depth reapplied from
+/// the filter and the per-entity
+/// [`layer_order`](AseTexture::layer_order) override, and the baked composite
+/// child is re-pointed at the atlas rect the component now names.
 ///
-/// A full respawn only happens when the underlying aseprite asset changes
-/// (different layer set detected).
+/// Children are replaced only when they cannot be reconciled — the aseprite
+/// handle now names a different layer set, or the render target changed.
 fn update_layers(
     mut cmd: Commands,
     query: Query<(Entity, &AseTexture, &SpriteLayers, Option<&AseFlip>), Changed<AseTexture>>,
-    layer_ids: Query<&LayerId, With<SpriteLayerOf>>,
-    mut transforms: Query<&mut Transform, With<SpriteLayerOf>>,
-    mut z_indices: Query<&mut ZIndex, With<SpriteLayerOf>>,
+    mut views: ChildViews,
     assets: Res<Assets<Aseprite>>,
     server: Res<AssetServer>,
 ) {
@@ -506,53 +694,21 @@ fn update_layers(
             continue;
         };
 
-        if tex.baked {
+        let reconciled = if tex.baked {
+            reconcile_baked(&mut cmd, tex, aseprite, sprite_layers, &mut views)
+        } else {
+            let matched = children_match(sprite_layers, aseprite, &views.layer_ids);
+            if matched {
+                apply_plan(&mut cmd, tex, aseprite, sprite_layers, &mut views);
+            }
+            matched
+        };
+
+        if !reconciled {
             for child in sprite_layers.iter() {
                 cmd.entity(child).despawn();
             }
             spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, flip);
-        } else {
-            // Check whether existing children exactly match the aseprite's full
-            // layer set. If not (e.g. aseprite handle changed), do a full respawn.
-            let children_match = {
-                let count = sprite_layers.iter().count();
-                count == aseprite.layers.len()
-                    && sprite_layers.iter().all(|child| {
-                        layer_ids
-                            .get(child)
-                            .is_ok_and(|id| aseprite.layers.iter().any(|entry| entry.id == *id))
-                    })
-            };
-
-            if !children_match {
-                for child in sprite_layers.iter() {
-                    cmd.entity(child).despawn();
-                }
-                spawn_children(&mut cmd, &server, &assets, entity, aseprite, tex, flip);
-            } else {
-                // Fast path: toggle visibility and reapply z-ordering.
-                let plan = LayerPlan::new(aseprite, tex);
-                for child in sprite_layers.iter() {
-                    let Ok(&id) = layer_ids.get(child) else {
-                        continue;
-                    };
-                    cmd.entity(child).insert(plan.visibility(id));
-
-                    let z = plan.z(id);
-                    match tex.render_target {
-                        AseRenderTarget::Sprite => {
-                            if let Ok(mut transform) = transforms.get_mut(child) {
-                                transform.translation.z = z_depth(z);
-                            }
-                        }
-                        AseRenderTarget::Ui => {
-                            if let Ok(mut zi) = z_indices.get_mut(child) {
-                                zi.0 = z as i32;
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -588,8 +744,8 @@ fn propagate_flip(
 ///
 /// Computes the delta between the new offset and the previously applied one,
 /// then adds that delta to each child's [`Transform`] (Sprite mode) or
-/// [`Node`] position (UI mode). This preserves any other positional changes
-/// made by other systems (e.g. z-ordering).
+/// [`Node`] position (UI mode), so whatever else writes those — z-ordering, a
+/// layout pass, a tween — keeps its work.
 ///
 /// In Sprite mode the delta is sign-flipped when [`AseFlip`] is active so that
 /// the visual anchor tracks correctly after a flip.
@@ -613,8 +769,9 @@ fn propagate_offset(
                 }
                 AseRenderTarget::Ui => {
                     if let Ok((mut node, mut applied)) = ui_nodes.get_mut(child) {
-                        node.left = Val::Px(new_offset.x);
-                        node.top = Val::Px(new_offset.y);
+                        let delta = new_offset - applied.0;
+                        node.left = moved(node.left, delta.x);
+                        node.top = moved(node.top, delta.y);
                         applied.0 = new_offset;
                     }
                 }
@@ -804,10 +961,21 @@ fn spawn_children(
     }
 
     let plan = LayerPlan::new(aseprite, tex);
+    let source_path = aseprite.source_path();
     for entry in &aseprite.layers {
         let layer_id = entry.id;
-        let layer_handle: Handle<Aseprite> =
-            server.load(format!("{}#{}", aseprite.source_path(), layer_id.as_str()));
+        // An asset assembled by `Aseprite::builder` has no file behind it, so
+        // there is no path to hang a `#layer` sub-asset off. Its children draw
+        // from the asset itself rather than from a request that never resolves.
+        let layer_handle: Handle<Aseprite> = if source_path.is_empty() {
+            warn_once!(
+                "aseprite asset {:?} has no source path; its layer children draw the whole file",
+                tex.aseprite.id(),
+            );
+            tex.aseprite.clone()
+        } else {
+            server.load(format!("{source_path}#{}", layer_id.as_str()))
+        };
 
         // Per-layer sub-assets load lazily on first `server.load` request, so
         // they are typically not yet in `Assets<Aseprite>` here. Fall back to
@@ -830,7 +998,7 @@ fn spawn_children(
                 layout: layer_ase.atlas_layout().clone(),
                 index,
                 slicer,
-                z: plan.z(layer_id),
+                z: plan.z(layer_id).unwrap_or_default(),
                 visibility: plan.visibility(layer_id),
                 source: layer_handle,
             },
@@ -1040,5 +1208,132 @@ mod tests {
         assert_eq!(translation(&app, child).y, 0.0);
         // z must not be touched by either propagation system
         assert_eq!(translation(&app, child).z, 5.0);
+    }
+
+    // ------------------------------------------------------------------ //
+    // propagate_offset, UI
+    // ------------------------------------------------------------------ //
+
+    /// Spawn a UI parent carrying `AseTexture` and a node child carrying
+    /// `AppliedOffset` + `Node`.
+    fn spawn_ui_offset_fixture(
+        app: &mut App,
+        offset: Vec2,
+        applied: Vec2,
+        initial: (Val, Val),
+    ) -> (Entity, Entity) {
+        let parent = app
+            .world_mut()
+            .spawn(AseTexture::new(Handle::default()).ui().with_offset(offset))
+            .id();
+        let child = app
+            .world_mut()
+            .spawn((
+                SpriteLayerOf(parent),
+                Node {
+                    left: initial.0,
+                    top: initial.1,
+                    ..default()
+                },
+                AppliedOffset(applied),
+            ))
+            .id();
+        (parent, child)
+    }
+
+    fn position(app: &App, entity: Entity) -> (Val, Val) {
+        let node = app.world().get::<Node>(entity).unwrap();
+        (node.left, node.top)
+    }
+
+    /// A layout pass, a tween, anything else writing the child's position
+    /// keeps its work: the offset moves the node by what changed.
+    #[test]
+    fn ui_offset_moves_the_node_by_the_delta() {
+        let mut app = offset_app();
+        let (_, child) = spawn_ui_offset_fixture(
+            &mut app,
+            Vec2::new(4.0, 1.0),
+            Vec2::new(1.0, 1.0),
+            (Val::Px(100.0), Val::Px(50.0)),
+        );
+        app.update();
+        assert_eq!(position(&app, child), (Val::Px(103.0), Val::Px(50.0)));
+    }
+
+    /// A position given in anything but pixels has no pixel origin to move
+    /// from, so it stays as its writer left it.
+    #[test]
+    fn a_ui_position_off_pixels_is_left_alone() {
+        let mut app = offset_app();
+        let (_, child) = spawn_ui_offset_fixture(
+            &mut app,
+            Vec2::new(4.0, 0.0),
+            Vec2::ZERO,
+            (Val::Percent(25.0), Val::Auto),
+        );
+        app.update();
+        assert_eq!(position(&app, child), (Val::Percent(25.0), Val::Auto));
+    }
+
+    // ------------------------------------------------------------------ //
+    // LayerPlan::z
+    // ------------------------------------------------------------------ //
+
+    /// A file whose layers are `names`, front to back.
+    fn file(names: &[&'static str]) -> Aseprite {
+        Aseprite {
+            layers: names
+                .iter()
+                .map(|name| LayerEntry::new(LayerId::new(name), true))
+                .collect(),
+            ..default()
+        }
+    }
+
+    #[test]
+    fn z_counts_up_towards_the_front_of_the_asset_order() {
+        let ase = file(&["front", "middle", "back"]);
+        let tex = AseTexture::new(Handle::default());
+        let plan = LayerPlan::new(&ase, &tex);
+        assert_eq!(plan.z(LayerId::new("front")), Some(2));
+        assert_eq!(plan.z(LayerId::new("middle")), Some(1));
+        assert_eq!(plan.z(LayerId::new("back")), Some(0));
+    }
+
+    #[test]
+    fn z_is_none_for_a_layer_the_file_does_not_have() {
+        let ase = file(&["front"]);
+        let tex = AseTexture::new(Handle::default());
+        assert_eq!(LayerPlan::new(&ase, &tex).z(LayerId::new("nope")), None);
+    }
+
+    #[test]
+    fn an_override_puts_the_layers_it_skips_behind_the_ones_it_names() {
+        let ase = file(&["a", "b", "c"]);
+        let tex = AseTexture::new(Handle::default()).with_layer_order(vec![LayerId::new("c")]);
+        let plan = LayerPlan::new(&ase, &tex);
+        assert_eq!(plan.z(LayerId::new("c")), Some(2), "the only named layer");
+        assert_eq!(
+            plan.z(LayerId::new("a")),
+            Some(1),
+            "in front of b, as in the file"
+        );
+        assert_eq!(plan.z(LayerId::new("b")), Some(0));
+    }
+
+    /// An override may name layers the file does not have; the ones it does
+    /// have keep the order it gives them.
+    #[test]
+    fn an_override_longer_than_the_file_still_orders_it() {
+        let ase = file(&["a", "b"]);
+        let tex = AseTexture::new(Handle::default()).with_layer_order(vec![
+            LayerId::new("x"),
+            LayerId::new("y"),
+            LayerId::new("a"),
+            LayerId::new("b"),
+        ]);
+        let plan = LayerPlan::new(&ase, &tex);
+        assert!(plan.z(LayerId::new("a")) > plan.z(LayerId::new("b")));
     }
 }
