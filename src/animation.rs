@@ -806,8 +806,14 @@ pub fn update_aseprite_animation(
 
         if state.elapsed > *frame_duration {
             cmd.trigger(NextFrame { entity });
-            state.elapsed =
-                Duration::from_secs_f32(state.elapsed.as_secs_f32() % frame_duration.as_secs_f32());
+            // A frame the file gives no duration carries nothing into the next
+            // one: the remainder is `elapsed % 0`, and `Duration` refuses the
+            // `NaN` that produces.
+            state.elapsed = if frame_duration.is_zero() {
+                Duration::ZERO
+            } else {
+                Duration::from_secs_f32(state.elapsed.as_secs_f32() % frame_duration.as_secs_f32())
+            };
         }
     }
 }
@@ -1355,6 +1361,32 @@ mod tests {
             app.world().get::<AseTag>(entity).map(|tag| tag.0),
             Some(TagId::new("Rock")),
         );
+    }
+
+    /// A frame the file gives no duration is stepped past, not divided by.
+    ///
+    /// The remainder carried into the next frame is `elapsed % duration`, which
+    /// for a zero duration is `NaN` — and `Duration::from_secs_f32` panics on
+    /// that, taking the game down over a frame an artist left at zero.
+    #[test]
+    fn a_zero_duration_frame_steps_instead_of_panicking() {
+        let mut ase = test_aseprite();
+        ase.frame_durations = vec![Duration::ZERO; 4];
+        let (mut app, handle) = plugin_app(ase, 16);
+        let entity = app
+            .world_mut()
+            .spawn((AseAnimation::default(), AnimationLayer::new(handle)))
+            .id();
+
+        let frames: Vec<u16> = (0..4)
+            .map(|_| {
+                app.update();
+                app.world().get::<AseFrame>(entity).expect("the frame").0
+            })
+            .collect();
+
+        // Nothing holds a frame with no duration, so each tick moves one on.
+        assert_eq!(frames, vec![0, 1, 2, 3]);
     }
 
     /// The mirror leaves `AseTag` alone once it already names the playing tag.
