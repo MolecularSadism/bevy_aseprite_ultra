@@ -73,6 +73,13 @@ pub struct Slice {
     pub keys: Vec<SliceKey>,
 }
 
+/// An animation tag, over the frame range the file records for it. The range
+/// is written as authored, so it may reach past the frames that exist.
+pub struct Tag {
+    pub name: &'static str,
+    pub range: (u16, u16),
+}
+
 /// The file to build.
 pub struct Fixture {
     pub canvas: (u16, u16),
@@ -155,14 +162,37 @@ fn slice_chunk(slice: &Slice) -> Vec<u8> {
     body
 }
 
+fn tags_chunk(tags: &[Tag]) -> Vec<u8> {
+    let mut body = Vec::new();
+    u16le(&mut body, tags.len() as u16);
+    body.extend_from_slice(&[0; 8]); // reserved
+    for tag in tags {
+        u16le(&mut body, tag.range.0);
+        u16le(&mut body, tag.range.1);
+        body.push(0); // direction: forward
+        u16le(&mut body, 0); // repeat: indefinitely
+        body.extend_from_slice(&[0; 6]); // reserved
+        body.extend_from_slice(&[0; 3]); // deprecated tag colour
+        body.push(0); // extra byte
+        u16le(&mut body, tag.name.len() as u16);
+        body.extend_from_slice(tag.name.as_bytes());
+    }
+    body
+}
+
 /// Serialises the fixture to Aseprite's binary format.
 pub fn build(fixture: &Fixture) -> Vec<u8> {
+    build_tagged(fixture, &[])
+}
+
+/// [`build`], with animation tags written into the file.
+pub fn build_tagged(fixture: &Fixture, tags: &[Tag]) -> Vec<u8> {
     let mut frames = Vec::new();
     for index in 0..fixture.frames {
         let mut chunks = Vec::new();
         let mut count = 0u32;
 
-        // Layers and slices are file-wide, so they ride on the first frame.
+        // Layers, slices and tags are file-wide, so they ride on the first frame.
         if index == 0 {
             for layer in &fixture.layers {
                 chunk(&mut chunks, 0x2004, &layer_chunk(layer));
@@ -170,6 +200,10 @@ pub fn build(fixture: &Fixture) -> Vec<u8> {
             }
             for slice in &fixture.slices {
                 chunk(&mut chunks, 0x2022, &slice_chunk(slice));
+                count += 1;
+            }
+            if !tags.is_empty() {
+                chunk(&mut chunks, 0x2018, &tags_chunk(tags));
                 count += 1;
             }
         }
@@ -219,6 +253,21 @@ pub fn load(name: &str, fixture: &Fixture, labels: &[&str]) -> (App, Vec<Handle<
     load_with(name, fixture, labels, AsepriteLoaderPlugin)
 }
 
+/// [`load`], for a fixture carrying animation tags.
+pub fn load_tagged(
+    name: &str,
+    fixture: &Fixture,
+    tags: &[Tag],
+    labels: &[&str],
+) -> (App, Vec<Handle<Aseprite>>) {
+    load_inner(
+        name,
+        &build_tagged(fixture, tags),
+        labels,
+        AsepriteLoaderPlugin,
+    )
+}
+
 /// [`load`], with the aseprite plugins the test needs in place of the bare
 /// loader — `AsepriteUltraPlugin` when the test drives components rather than
 /// reading asset data.
@@ -228,10 +277,20 @@ pub fn load_with<P: Plugins<M>, M>(
     labels: &[&str],
     plugins: P,
 ) -> (App, Vec<Handle<Aseprite>>) {
+    load_inner(name, &build(fixture), labels, plugins)
+}
+
+/// Writes `bytes` as `name.aseprite` and loads the given labels off it.
+fn load_inner<P: Plugins<M>, M>(
+    name: &str,
+    bytes: &[u8],
+    labels: &[&str],
+    plugins: P,
+) -> (App, Vec<Handle<Aseprite>>) {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
     std::fs::create_dir_all(&dir).expect("scratch asset dir");
     let file = format!("{name}.aseprite");
-    std::fs::write(dir.join(&file), build(fixture)).expect("write fixture");
+    std::fs::write(dir.join(&file), bytes).expect("write fixture");
 
     let mut app = App::new();
     app.add_plugins((

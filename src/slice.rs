@@ -1,6 +1,6 @@
 use crate::animation::{AseFrame, AseTag, resolve_frame};
 use crate::layers::{SliceId, SpriteLayerOf};
-use crate::loader::{Aseprite, SliceMeta};
+use crate::loader::{Aseprite, SliceMeta, SliceView};
 use bevy::{
     ecs::component::Mutable,
     log::warn_once,
@@ -90,12 +90,12 @@ impl Plugin for AsepriteSlicePlugin {
 ///     fn render_slice(
 ///         &mut self,
 ///         aseprite: &Aseprite,
-///         slice_meta: &SliceMeta,
+///         slice: SliceView,
 ///         extra: &mut Self::Extra<'_>,
 ///     ) {
 ///         self.image = aseprite.atlas_image().clone();
-///         self.texture_min = slice_meta.rect.min.as_uvec2();
-///         self.texture_max = slice_meta.rect.max.as_uvec2();
+///         self.texture_min = slice.rect.min.as_uvec2();
+///         self.texture_max = slice.rect.max.as_uvec2();
 ///         self.time = extra.elapsed_secs();
 ///     }
 /// }
@@ -103,23 +103,19 @@ impl Plugin for AsepriteSlicePlugin {
 pub trait RenderSlice {
     /// An extra system parameter used in rendering. Use a tuple if many are required.
     type Extra<'e>;
-    fn render_slice(
-        &mut self,
-        aseprite: &Aseprite,
-        slice_meta: &SliceMeta,
-        extra: &mut Self::Extra<'_>,
-    );
+    /// Draws `slice` — one slice on one frame — off `aseprite`'s atlas.
+    fn render_slice(&mut self, aseprite: &Aseprite, slice: SliceView, extra: &mut Self::Extra<'_>);
 }
 
 impl RenderSlice for ImageNode {
     type Extra<'e> = ();
-    fn render_slice(&mut self, aseprite: &Aseprite, slice_meta: &SliceMeta, _extra: &mut ()) {
+    fn render_slice(&mut self, aseprite: &Aseprite, slice: SliceView, _extra: &mut ()) {
         self.image = aseprite.atlas_image().clone();
         self.texture_atlas = Some(TextureAtlas {
             layout: aseprite.atlas_layout().clone(),
-            index: slice_meta.atlas_id,
+            index: slice.atlas_id,
         });
-        if let Some(border) = slice_meta.border() {
+        if let Some(border) = slice.border() {
             let existing = match &self.image_mode {
                 NodeImageMode::Sliced(slicer) => Some(slicer),
                 _ => None,
@@ -131,13 +127,13 @@ impl RenderSlice for ImageNode {
 
 impl RenderSlice for Sprite {
     type Extra<'e> = ();
-    fn render_slice(&mut self, aseprite: &Aseprite, slice_meta: &SliceMeta, _extra: &mut ()) {
+    fn render_slice(&mut self, aseprite: &Aseprite, slice: SliceView, _extra: &mut ()) {
         self.image = aseprite.atlas_image().clone();
         self.texture_atlas = Some(TextureAtlas {
             layout: aseprite.atlas_layout().clone(),
-            index: slice_meta.atlas_id,
+            index: slice.atlas_id,
         });
-        if let Some(border) = slice_meta.border() {
+        if let Some(border) = slice.border() {
             let existing = match &self.image_mode {
                 SpriteImageMode::Sliced(slicer) => Some(slicer),
                 _ => None,
@@ -149,47 +145,32 @@ impl RenderSlice for Sprite {
 
 impl<M: Material2d + RenderSlice> RenderSlice for MeshMaterial2d<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderSlice>::Extra<'e>);
-    fn render_slice(
-        &mut self,
-        aseprite: &Aseprite,
-        slice_meta: &SliceMeta,
-        extra: &mut Self::Extra<'_>,
-    ) {
+    fn render_slice(&mut self, aseprite: &Aseprite, slice: SliceView, extra: &mut Self::Extra<'_>) {
         let Some(material) = extra.0.get_mut(&*self) else {
             return;
         };
-        material.render_slice(aseprite, slice_meta, &mut extra.1);
+        material.render_slice(aseprite, slice, &mut extra.1);
     }
 }
 
 impl<M: UiMaterial + RenderSlice> RenderSlice for MaterialNode<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderSlice>::Extra<'e>);
-    fn render_slice(
-        &mut self,
-        aseprite: &Aseprite,
-        slice_meta: &SliceMeta,
-        extra: &mut Self::Extra<'_>,
-    ) {
+    fn render_slice(&mut self, aseprite: &Aseprite, slice: SliceView, extra: &mut Self::Extra<'_>) {
         let Some(material) = extra.0.get_mut(&*self) else {
             return;
         };
-        material.render_slice(aseprite, slice_meta, &mut extra.1);
+        material.render_slice(aseprite, slice, &mut extra.1);
     }
 }
 
 #[cfg(feature = "3d")]
 impl<M: Material + RenderSlice> RenderSlice for MeshMaterial3d<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderSlice>::Extra<'e>);
-    fn render_slice(
-        &mut self,
-        aseprite: &Aseprite,
-        slice_meta: &SliceMeta,
-        extra: &mut Self::Extra<'_>,
-    ) {
+    fn render_slice(&mut self, aseprite: &Aseprite, slice: SliceView, extra: &mut Self::Extra<'_>) {
         let Some(material) = extra.0.get_mut(&*self) else {
             return;
         };
-        material.render_slice(aseprite, slice_meta, &mut extra.1);
+        material.render_slice(aseprite, slice, &mut extra.1);
     }
 }
 
@@ -309,37 +290,21 @@ pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
 
         // A slice is defined in canvas coordinates, so its crop rect is the
         // same on every frame — only *which frame's rendered image* it crops
-        // into changes as the animation plays. Re-point atlas_id at the
-        // current frame's own position every time, then layer an explicit
-        // per-frame key (rect/pivot/9-patch) on top when Aseprite's slice
-        // timeline defines one for this exact frame.
-        let effective_meta = if let Some(frame) = maybe_frame {
-            let absolute = resolve_frame(aseprite, frame, maybe_tag);
-            let frame_idx = usize::from(absolute);
-            let atlas_id = slice_meta.atlas_id_for_frame(frame_idx);
-            if let Some(key) = slice_meta.keys.iter().find(|k| k.frame == frame_idx) {
-                SliceMeta {
-                    rect: key.rect,
-                    atlas_id,
-                    pivot: key.pivot.or(slice_meta.pivot),
-                    nine_patch: key.nine_patch.or(slice_meta.nine_patch),
-                    keys: vec![],
-                    frame_atlas_ids: vec![],
-                }
-            } else {
-                SliceMeta {
-                    atlas_id,
-                    ..slice_meta.clone()
-                }
+        // into changes as the animation plays. The frame's view carries that
+        // frame's atlas position, and whatever rect, pivot or centre
+        // Aseprite's slice timeline sets on a key for this exact frame.
+        let view = match maybe_frame {
+            Some(frame) => {
+                let absolute = resolve_frame(aseprite, frame, maybe_tag);
+                slice_meta.view_at_frame(usize::from(absolute))
             }
-        } else {
-            slice_meta.clone()
+            None => SliceView::from(slice_meta),
         };
 
         if let Some(mut anchor) = maybe_anchor {
-            *anchor = Anchor::from(&effective_meta);
+            *anchor = Anchor::from(view);
         }
 
-        target.render_slice(aseprite, &effective_meta, &mut extra);
+        target.render_slice(aseprite, view, &mut extra);
     }
 }

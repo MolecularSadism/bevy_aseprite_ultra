@@ -71,8 +71,9 @@ impl AsepriteBuilder {
 
     /// Registers a nine-patch slice covering `rect`, whose centre is given in
     /// Aseprite's own `Vec4(x, y, width, height)` form, relative to the slice
-    /// origin. Its atlas position is `0`; [`with_slice_meta`](Self::with_slice_meta)
-    /// sets another.
+    /// origin. A centre `rect` cannot hold leaves the slice without a border
+    /// ([`SliceMeta::border`]). Its atlas position is `0`;
+    /// [`with_slice_meta`](Self::with_slice_meta) sets another.
     ///
     /// ```
     /// # use bevy::prelude::*;
@@ -341,6 +342,25 @@ mod tests {
             .expect("a centre makes a border");
         assert_eq!(border.min_inset, Vec2::new(3.0, 2.0));
         assert_eq!(border.max_inset, Vec2::new(3.0, 2.0));
+    }
+
+    /// The builder states a rect and a centre independently, so nothing stops
+    /// a caller pairing a centre with a rect it does not fit.
+    #[test]
+    fn a_centre_too_big_for_its_rect_is_no_border() {
+        let aseprite = Aseprite::builder()
+            .with_nine_patch_slice(
+                "Frame",
+                Rect::new(0.0, 0.0, 8.0, 8.0),
+                Vec4::new(4.0, 4.0, 24.0, 24.0),
+            )
+            .build();
+
+        assert_eq!(
+            aseprite.slice("Frame").and_then(SliceMeta::border),
+            None,
+            "a centre wider than the slice has no insets to give",
+        );
     }
 
     #[test]

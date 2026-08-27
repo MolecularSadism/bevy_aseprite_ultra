@@ -1,3 +1,51 @@
+## 0.12.0
+
+Breaking. The tick system stops panicking on values a caller is invited to
+set, a clip ends once instead of repeating its ending, and a tag change
+starts the tag.
+
+- **A negative or non-finite `speed` no longer panics.** It reached
+  `Duration::from_secs_f32`, which refuses both, taking the schedule down from
+  a public field documented only as a multiplier. Backwards playback is
+  `AnimationDirection::Reverse`; `speed` is documented as non-negative.
+- **`AnimationEvent::Finished` fires once.** A finished animation kept crossing
+  its frame duration and kept writing the event, once per frame duration for as
+  long as the entity lived.
+- **A tag change opens the new tag.** `play`, `then` and the queue left the
+  frame wherever the last tag stopped, unless the new one ran backwards. Frame
+  carry-over is what `hold_relative_frame` is for, and it means something again.
+- **Ping-pong counts a there-and-back as one cycle.** Each end counted, so a
+  clip told to play once went out and never came back.
+- **`relative_frame` is derived from the frame and its range**, in one place,
+  rather than stepped alongside it — it could leave the range of a one-frame
+  tag, and went stale on a tag change.
+- **A tag reaching past the file's frames is clamped at load**, with a warning
+  naming it. It used to walk to the first frame it could not resolve and stop
+  there in silence, drawing a plausible last frame forever.
+- **`SliceMeta::border()` measures a centre against the rect it belongs to.** A
+  slice resized across its timeline had a later key's centre measured against
+  frame 0's rect, which produced negative insets the doc promised were
+  impossible. `AsepriteBuilder::with_nine_patch_slice` is validated the same way.
+- **A slice with no area anchors at its centre** instead of dividing by zero
+  into a `NaN` anchor.
+- **`RenderSlice::render_slice` takes a `SliceView`** — one slice on one frame,
+  `Copy` — instead of a `&SliceMeta` the renderer had to synthesise per entity
+  per frame by cloning the slice's whole timeline. `SliceMeta::view_at_frame`
+  exposes the same resolution.
+- **A static layer child stops reporting a change it never made.**
+  `render_children_animation` rewrote every child every frame, which is what
+  `AseTexture`'s "zero per-tick overhead" ruled out.
+- **A structural hot reload reaches the entities drawing it.** Adding, removing
+  or renaming a layer left existing children stale, since nothing watched
+  `AssetEvent::Modified`.
+- **Baked mode reconciles its child** instead of despawning and respawning it on
+  every `AseTexture` write.
+- **A layer absent from a `layer_order` override sits behind everything named**,
+  rather than sharing a depth with the backmost named layer.
+- **A pathless `Aseprite` reuses its parent's handle** for layer children
+  instead of asking the asset server for `"#Layer"` — the builder's whole point
+  is a sheet with no file behind it.
+
 ## 0.11.1
 
 - **The tag mirror stops flagging `AseTag` on every tick.** The tick system
