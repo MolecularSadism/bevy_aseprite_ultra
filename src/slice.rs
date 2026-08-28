@@ -3,7 +3,7 @@ use crate::layers::{SliceId, SpriteLayerOf};
 use crate::loader::{Aseprite, SliceMeta, SliceView};
 use bevy::{
     ecs::component::Mutable,
-    log::warn_once,
+    platform::collections::HashSet,
     prelude::*,
     sprite::{Anchor, BorderRect, TextureSlicer},
     sprite_render::Material2d,
@@ -233,6 +233,7 @@ pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
     )>,
     parent_frames: Query<(Ref<AseFrame>, Option<Ref<AseTag>>)>,
     aseprites: Res<Assets<Aseprite>>,
+    mut warned_missing: Local<HashSet<(AssetId<Aseprite>, SliceId)>>,
     mut extra: <T as RenderSlice>::Extra<'_>,
 ) {
     let asset_change = aseprites.is_changed();
@@ -260,22 +261,26 @@ pub fn render_slice<T: RenderSlice + Component<Mutability = Mutable>>(
         };
         let Some(slice_meta) = aseprite.slice(slice.name) else {
             // An artist typo is the commonest way to reach this, and release
-            // is where nobody can attach a debugger — so warn there too. Once,
-            // not every frame the animation ticks; the formatting only runs on
-            // that first pass.
-            warn_once!(
-                "slice {:?} does not exist in aseprite '{}' (available: {:?})",
-                slice.name.as_str(),
-                slice
-                    .aseprite
-                    .path()
-                    .map(|path| path.to_string())
-                    .unwrap_or_else(|| format!("<handle {:?}>", slice.aseprite.id())),
-                aseprite
-                    .slices()
-                    .map(|(id, _)| id.as_str())
-                    .collect::<Vec<_>>(),
-            );
+            // is where nobody can attach a debugger — so warn there too. Once
+            // per (sheet, slice), not every frame the animation ticks — and
+            // not once per system, which would let the first typo anywhere
+            // swallow every other one. The formatting only runs on that first
+            // pass.
+            if warned_missing.insert((slice.aseprite.id(), slice.name)) {
+                warn!(
+                    "slice {:?} does not exist in aseprite '{}' (available: {:?})",
+                    slice.name.as_str(),
+                    slice
+                        .aseprite
+                        .path()
+                        .map(|path| path.to_string())
+                        .unwrap_or_else(|| format!("<handle {:?}>", slice.aseprite.id())),
+                    aseprite
+                        .slices()
+                        .map(|(id, _)| id.as_str())
+                        .collect::<Vec<_>>(),
+                );
+            }
             continue;
         };
 

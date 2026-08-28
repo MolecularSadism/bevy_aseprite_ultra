@@ -138,6 +138,20 @@ impl Aseprite {
         &self.atlas_image
     }
 
+    /// The size of the file's canvas in pixels — the box every frame renders
+    /// into. For a sheet with no slices, where each frame is the whole
+    /// canvas, this is the natural size to draw or measure it at.
+    ///
+    /// The canvas only exists in the packed atlas, so this reads a frame's
+    /// rect out of the layout: `None` while the layout has not loaded, or for
+    /// an asset with no frames at all.
+    #[must_use]
+    pub fn canvas_size(&self, layouts: &Assets<TextureAtlasLayout>) -> Option<Vec2> {
+        let layout = layouts.get(&self.atlas_layout)?;
+        let rect = layout.textures.get(self.atlas_index(0)?)?;
+        Some(rect.size().as_vec2())
+    }
+
     /// The asset path this was loaded from, which sub-asset paths are built
     /// from. Empty for an [`Aseprite`] assembled by
     /// [`builder`](Self::builder) rather than loaded from a file.
