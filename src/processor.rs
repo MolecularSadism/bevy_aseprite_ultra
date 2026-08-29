@@ -231,11 +231,19 @@ impl AssetLoader for ProcessedAsepriteLoader {
             ..aseprite
         };
 
-        for (label, variant) in processed.variants {
-            load_context.add_labeled_asset(label, restore(variant));
-        }
+        // The composite holds a handle to every labeled variant so Bevy keeps
+        // them resident alongside it (see `Aseprite::variant_handles`); the
+        // cache does not carry the handles, so they are rebuilt here.
+        let variant_handles = processed
+            .variants
+            .into_iter()
+            .map(|(label, variant)| load_context.add_labeled_asset(label, restore(variant)))
+            .collect();
 
-        Ok(restore(processed.root))
+        Ok(Aseprite {
+            variant_handles,
+            ..restore(processed.root)
+        })
     }
 }
 

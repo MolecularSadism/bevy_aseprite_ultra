@@ -1,3 +1,15 @@
+## Unreleased
+
+- **A file's per-layer sub-assets stay resident for as long as its composite
+  is.** The loader builds every layer variant in the one load pass, but handed
+  each labeled sub-asset's handle to no one, so Bevy dropped every one the
+  moment the load finished — a labeled sub-asset it holds no live handle to is
+  never inserted. The next `load("file.aseprite#Layer")` then forced a
+  from-scratch reload of the whole file, re-decoding and re-packing its atlas,
+  and resolved to nothing until it finished several frames later. The composite
+  now keeps a handle to each variant, so a layer is ready the moment its file
+  is rather than after re-decoding it. No API or on-disk cache change.
+
 ## 0.12.0
 
 Breaking. The tick system stops panicking on values a caller is invited to
