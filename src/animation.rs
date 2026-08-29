@@ -1116,6 +1116,7 @@ mod tests {
             frame_indices: vec![0, 1, 2, 3],
             source_path: String::new(),
             layers: vec![],
+            variant_handles: vec![],
         }
     }
 

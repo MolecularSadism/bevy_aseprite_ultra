@@ -65,6 +65,22 @@ pub struct Aseprite {
     /// [`AseTexture`](crate::layers::AseTexture), never on the shared asset.
     #[cfg_attr(feature = "asset_processing", serde(with = "layer_serde"))]
     pub(crate) layers: Vec<LayerEntry>,
+    /// Strong handles to this file's labeled sub-asset variants — the `all`
+    /// composite and one per layer — held by the default (composite) asset so
+    /// they stay resident for exactly as long as it is.
+    ///
+    /// The loader builds every variant in the one load pass, but a labeled
+    /// sub-asset Bevy is left holding no live handle to is dropped the instant
+    /// that load finishes rather than inserted. Keeping the handles here is the
+    /// whole reason `load("file.ase#Layer")` resolves against resident data
+    /// instead of forcing a from-scratch reload of the file — so a layer is
+    /// ready the moment its file is, not after re-decoding and re-packing the
+    /// atlas the first time that layer is asked for. Nothing reads this field;
+    /// its presence is the invariant. Empty on the variants themselves and on a
+    /// builder-made asset.
+    #[allow(dead_code, reason = "held to keep the variants resident, never read")]
+    #[cfg_attr(feature = "asset_processing", serde(skip))]
+    pub(crate) variant_handles: Vec<Handle<Aseprite>>,
 }
 
 impl Aseprite {
@@ -835,19 +851,27 @@ impl AssetLoader for AsepriteLoader {
             frame_indices,
             source_path: source_path.clone(),
             layers: layer_entries.clone(),
+            variant_handles: Vec::new(),
         };
 
-        load_context.add_labeled_asset("all".into(), variant(all_slices, all_indices));
+        // The composite holds a handle to every labeled variant so Bevy keeps
+        // them resident alongside it (see `Aseprite::variant_handles`).
+        let mut variant_handles = Vec::with_capacity(per_layer_data.len() + 1);
+        variant_handles
+            .push(load_context.add_labeled_asset("all".into(), variant(all_slices, all_indices)));
 
         for (layer_id, layer_indices, layer_slices) in per_layer_data {
-            load_context.add_labeled_asset(
+            variant_handles.push(load_context.add_labeled_asset(
                 layer_id.as_str().into(),
                 variant(layer_slices, layer_indices),
-            );
+            ));
         }
 
         // The default asset: every layer the settings leave visible, composited.
-        Ok(variant(composite_slices, composite_indices))
+        Ok(Aseprite {
+            variant_handles,
+            ..variant(composite_slices, composite_indices)
+        })
     }
 
     fn extensions(&self) -> &[&str] {
