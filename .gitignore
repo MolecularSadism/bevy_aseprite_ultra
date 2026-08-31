@@ -2,4 +2,7 @@
 /Cargo.lock
 /examples/processing/imported_assets
 /imported_assets
-.*/
+.vscode/
+.idea/
+.claude/
+.DS_Store
