@@ -1,5 +1,8 @@
 ## Unreleased
 
+- **`Aseprite::match_tag(name)`** returns the `TagId` whose name equals
+  `name` ignoring ASCII case, for callers that take tag names from data
+  authored with different casing than the file.
 - **A file's per-layer sub-assets stay resident for as long as its composite
   is.** The loader builds every layer variant in the one load pass, but handed
   each labeled sub-asset's handle to no one, so Bevy dropped every one the

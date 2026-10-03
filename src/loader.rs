@@ -126,6 +126,16 @@ impl Aseprite {
         self.tags.get(&name.into())
     }
 
+    /// The id of the tag whose name equals `name` ignoring ASCII case, or
+    /// `None` when the file defines no such tag.
+    #[must_use]
+    pub fn match_tag(&self, name: &str) -> Option<TagId> {
+        self.tags
+            .keys()
+            .find(|id| id.as_str().eq_ignore_ascii_case(name))
+            .copied()
+    }
+
     /// Every animation tag of the file, by id, in arbitrary order.
     pub fn tags(&self) -> impl Iterator<Item = (TagId, &TagMeta)> {
         self.tags.iter().map(|(id, meta)| (*id, meta))
