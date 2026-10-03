@@ -431,6 +431,17 @@ mod tests {
     }
 
     #[test]
+    fn match_tag_ignores_ascii_case() {
+        let aseprite = Aseprite::builder()
+            .with_tag(TagId::new("Walk"), 2..=5)
+            .build();
+
+        assert_eq!(aseprite.match_tag("walk"), Some(TagId::new("Walk")));
+        assert_eq!(aseprite.match_tag("WALK"), Some(TagId::new("Walk")));
+        assert_eq!(aseprite.match_tag("run"), None);
+    }
+
+    #[test]
     fn frames_and_source_path_survive_the_build() {
         let aseprite = Aseprite::builder()
             .with_frame_durations([Duration::from_millis(50), Duration::from_millis(120)])
