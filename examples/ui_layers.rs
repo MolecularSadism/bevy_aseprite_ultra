@@ -35,7 +35,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn((
         Text::new("Layered Animations in UI"),
         TextFont {
-            font_size: 24.,
+            font_size: FontSize::Px(24.),
             ..default()
         },
         TextColor(css::WHITE.into()),
@@ -102,7 +102,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn((
         Text::new("Baked AseTexture"),
         TextFont {
-            font_size: 14.,
+            font_size: FontSize::Px(14.),
             ..default()
         },
         TextColor(css::WHITE.into()),
@@ -178,7 +178,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn((
         Text::new("Layered AseTexture"),
         TextFont {
-            font_size: 14.,
+            font_size: FontSize::Px(14.),
             ..default()
         },
         TextColor(css::WHITE.into()),
@@ -189,7 +189,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
     cmd.spawn((
         Text::new(LayerState::AllVisible.hint()),
         TextFont {
-            font_size: 18.,
+            font_size: FontSize::Px(18.),
             ..default()
         },
         TextColor(css::GRAY.into()),

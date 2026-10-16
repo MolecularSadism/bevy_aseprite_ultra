@@ -88,7 +88,7 @@ impl RenderAnimation for Sprite {
 impl<M: Material2d + RenderAnimation> RenderAnimation for MeshMaterial2d<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderAnimation>::Extra<'e>);
     fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, extra: &mut Self::Extra<'_>) {
-        let Some(material) = extra.0.get_mut(&*self) else {
+        let Some(mut material) = extra.0.get_mut(&*self) else {
             return;
         };
         material.render_animation(aseprite, frame, &mut extra.1);
@@ -98,7 +98,7 @@ impl<M: Material2d + RenderAnimation> RenderAnimation for MeshMaterial2d<M> {
 impl<M: UiMaterial + RenderAnimation> RenderAnimation for MaterialNode<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderAnimation>::Extra<'e>);
     fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, extra: &mut Self::Extra<'_>) {
-        let Some(material) = extra.0.get_mut(&*self) else {
+        let Some(mut material) = extra.0.get_mut(&*self) else {
             return;
         };
         material.render_animation(aseprite, frame, &mut extra.1);
@@ -109,7 +109,7 @@ impl<M: UiMaterial + RenderAnimation> RenderAnimation for MaterialNode<M> {
 impl<M: Material + RenderAnimation> RenderAnimation for MeshMaterial3d<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderAnimation>::Extra<'e>);
     fn render_animation(&mut self, aseprite: &Aseprite, frame: u16, extra: &mut Self::Extra<'_>) {
-        let Some(material) = extra.0.get_mut(&*self) else {
+        let Some(mut material) = extra.0.get_mut(&*self) else {
             return;
         };
         material.render_animation(aseprite, frame, &mut extra.1);

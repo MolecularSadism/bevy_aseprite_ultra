@@ -1,4 +1,14 @@
-## Unreleased
+## 0.13.0
+
+Breaking: targets Bevy 0.19.
+
+- **Bevy 0.19.** Requires Rust 1.95 (Bevy 0.19's MSRV). No behaviour change.
+- The `RenderAnimation`/`RenderSlice` impls for material handles go through
+  Bevy 0.19's `Assets::get_mut`, which now returns an `AssetMut` guard.
+- Dependency bumps: `uuid` 1.28, `thiserror` 2.0.21, `serde` 1.0.229,
+  `rmp-serde` 1.3.1.
+
+## 0.12.1
 
 - **`Aseprite::match_tag(name)`** returns the `TagId` whose name equals
   `name` ignoring ASCII case, for callers that take tag names from data

@@ -83,8 +83,9 @@ impl AssetSaver for AsepriteSaver {
     async fn save(
         &self,
         writer: &mut bevy::asset::io::Writer,
-        asset: bevy::asset::saver::SavedAsset<'_, Self::Asset>,
+        asset: bevy::asset::saver::SavedAsset<'_, '_, Self::Asset>,
         _settings: &Self::Settings,
+        _asset_path: bevy::asset::AssetPath<'_>,
     ) -> Result<<Self::OutputLoader as bevy::asset::AssetLoader>::Settings, Self::Error> {
         let texture_atlas_layout: SavedAsset<TextureAtlasLayout> = asset
             .get_labeled(ATLAS_LAYOUT)
@@ -108,7 +109,7 @@ impl AssetSaver for AsepriteSaver {
         let variants: Vec<(String, Aseprite)> = labels
             .into_iter()
             .filter_map(|label| {
-                let variant = asset.get_labeled::<Aseprite, str>(&label)?;
+                let variant = asset.get_labeled::<Aseprite>(&label)?;
                 Some((label, variant.get().clone()))
             })
             .collect();
@@ -136,7 +137,7 @@ impl AssetSaver for AsepriteSaver {
         let mut image_buf = Vec::new();
         let mut image_write = Cursor::new(&mut image_buf);
 
-        let dynamic = atlas_texture.clone().try_into_dynamic()?;
+        let dynamic = atlas_texture.get().clone().try_into_dynamic()?;
         dynamic.write_to(&mut image_write, ImageFormat::Qoi)?;
 
         writer
@@ -217,9 +218,8 @@ impl AssetLoader for ProcessedAsepriteLoader {
         )?;
 
         let atlas_layout_handle =
-            load_context.add_labeled_asset(ATLAS_LAYOUT.into(), processed.atlas_layout);
-        let atlas_texture_handle =
-            load_context.add_labeled_asset(ATLAS_TEXTURE.into(), atlas_texture);
+            load_context.add_labeled_asset(ATLAS_LAYOUT, processed.atlas_layout);
+        let atlas_texture_handle = load_context.add_labeled_asset(ATLAS_TEXTURE, atlas_texture);
 
         // Handles and the source path cannot survive serialization; every
         // variant is put back onto the one atlas this file just decoded.

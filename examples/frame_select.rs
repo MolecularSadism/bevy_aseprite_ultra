@@ -75,7 +75,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
         root.spawn((
             Text::new("[Space] pause/resume left   [Left]/[Right] scrub frame   [R] reset"),
             TextFont {
-                font_size: 18.,
+                font_size: FontSize::Px(18.),
                 ..default()
             },
             TextColor(css::GRAY.into()),
@@ -87,7 +87,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
         root.spawn((
             Text::new("left: paused @ frame 0   |   right: parent slow, Swoosh fast"),
             TextFont {
-                font_size: 16.,
+                font_size: FontSize::Px(16.),
                 ..default()
             },
             TextColor(css::WHITE.into()),
@@ -113,14 +113,14 @@ fn attach_per_layer_driver(
     let swoosh = LayerId::new("Swoosh");
     for layers in &demos {
         for child in layers.iter() {
-            if let Ok((entity, id)) = children.get(child) {
-                if *id == swoosh {
-                    cmd.entity(entity).insert(
-                        AseAnimation::default()
-                            .with_repeat(AnimationRepeat::Loop)
-                            .with_speed(2.0),
-                    );
-                }
+            if let Ok((entity, id)) = children.get(child)
+                && *id == swoosh
+            {
+                cmd.entity(entity).insert(
+                    AseAnimation::default()
+                        .with_repeat(AnimationRepeat::Loop)
+                        .with_speed(2.0),
+                );
             }
         }
     }

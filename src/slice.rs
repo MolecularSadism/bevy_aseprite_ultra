@@ -146,7 +146,7 @@ impl RenderSlice for Sprite {
 impl<M: Material2d + RenderSlice> RenderSlice for MeshMaterial2d<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderSlice>::Extra<'e>);
     fn render_slice(&mut self, aseprite: &Aseprite, slice: SliceView, extra: &mut Self::Extra<'_>) {
-        let Some(material) = extra.0.get_mut(&*self) else {
+        let Some(mut material) = extra.0.get_mut(&*self) else {
             return;
         };
         material.render_slice(aseprite, slice, &mut extra.1);
@@ -156,7 +156,7 @@ impl<M: Material2d + RenderSlice> RenderSlice for MeshMaterial2d<M> {
 impl<M: UiMaterial + RenderSlice> RenderSlice for MaterialNode<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderSlice>::Extra<'e>);
     fn render_slice(&mut self, aseprite: &Aseprite, slice: SliceView, extra: &mut Self::Extra<'_>) {
-        let Some(material) = extra.0.get_mut(&*self) else {
+        let Some(mut material) = extra.0.get_mut(&*self) else {
             return;
         };
         material.render_slice(aseprite, slice, &mut extra.1);
@@ -167,7 +167,7 @@ impl<M: UiMaterial + RenderSlice> RenderSlice for MaterialNode<M> {
 impl<M: Material + RenderSlice> RenderSlice for MeshMaterial3d<M> {
     type Extra<'e> = (ResMut<'e, Assets<M>>, <M as RenderSlice>::Extra<'e>);
     fn render_slice(&mut self, aseprite: &Aseprite, slice: SliceView, extra: &mut Self::Extra<'_>) {
-        let Some(material) = extra.0.get_mut(&*self) else {
+        let Some(mut material) = extra.0.get_mut(&*self) else {
             return;
         };
         material.render_slice(aseprite, slice, &mut extra.1);

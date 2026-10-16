@@ -804,8 +804,8 @@ impl AssetLoader for AsepriteLoader {
         }
 
         // ----------------------------- labeled sub-assets (shared atlas)
-        let atlas_layout = load_context.add_labeled_asset("atlas_layout".into(), layout);
-        let atlas_image = load_context.add_labeled_asset("atlas_texture".into(), image);
+        let atlas_layout = load_context.add_labeled_asset("atlas_layout", layout);
+        let atlas_image = load_context.add_labeled_asset("atlas_texture", image);
 
         // ---------------------------- tags
         // A tag keeps the range it was authored with, so deleting frames in
@@ -868,11 +868,11 @@ impl AssetLoader for AsepriteLoader {
         // them resident alongside it (see `Aseprite::variant_handles`).
         let mut variant_handles = Vec::with_capacity(per_layer_data.len() + 1);
         variant_handles
-            .push(load_context.add_labeled_asset("all".into(), variant(all_slices, all_indices)));
+            .push(load_context.add_labeled_asset("all", variant(all_slices, all_indices)));
 
         for (layer_id, layer_indices, layer_slices) in per_layer_data {
             variant_handles.push(load_context.add_labeled_asset(
-                layer_id.as_str().into(),
+                layer_id.as_str().to_owned(),
                 variant(layer_slices, layer_indices),
             ));
         }

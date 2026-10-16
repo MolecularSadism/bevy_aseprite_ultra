@@ -100,9 +100,11 @@ fn empty_layer_filter_produces_blank_atlas() {
     let handle: Handle<Aseprite> = app
         .world_mut()
         .resource::<AssetServer>()
-        .load_with_settings(LAYERS_ASE, |s: &mut AsepriteLoaderSettings| {
+        .load_builder()
+        .with_settings(|s: &mut AsepriteLoaderSettings| {
             s.visible_layers = Some(vec![]);
-        });
+        })
+        .load(LAYERS_ASE);
 
     load_until_ready(&mut app, &handle);
 
@@ -136,17 +138,21 @@ fn single_layer_filter_differs_from_all_layers() {
     let handle_all: Handle<Aseprite> = app_all
         .world_mut()
         .resource::<AssetServer>()
-        .load_with_settings(LAYERS_ASE, |s: &mut AsepriteLoaderSettings| {
+        .load_builder()
+        .with_settings(|s: &mut AsepriteLoaderSettings| {
             s.visible_layers = None;
-        });
+        })
+        .load(LAYERS_ASE);
 
     let first = visible[0].clone();
     let handle_one: Handle<Aseprite> = app_one
         .world_mut()
         .resource::<AssetServer>()
-        .load_with_settings(LAYERS_ASE, move |s: &mut AsepriteLoaderSettings| {
+        .load_builder()
+        .with_settings(move |s: &mut AsepriteLoaderSettings| {
             s.visible_layers = Some(vec![first.clone()]);
-        });
+        })
+        .load(LAYERS_ASE);
 
     load_until_ready(&mut app_all, &handle_all);
     load_until_ready(&mut app_one, &handle_one);
