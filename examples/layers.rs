@@ -95,7 +95,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
             row.spawn((
                 Text::new("Baked AseTexture"),
                 TextFont {
-                    font_size: 16.,
+                    font_size: FontSize::Px(16.),
                     ..default()
                 },
                 TextColor(css::WHITE.into()),
@@ -103,7 +103,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
             row.spawn((
                 Text::new("Layered AseTexture"),
                 TextFont {
-                    font_size: 16.,
+                    font_size: FontSize::Px(16.),
                     ..default()
                 },
                 TextColor(css::WHITE.into()),
@@ -114,7 +114,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
         root.spawn((
             Text::new(LayerState::AllVisible.hint()),
             TextFont {
-                font_size: 18.,
+                font_size: FontSize::Px(18.),
                 ..default()
             },
             TextColor(css::GRAY.into()),

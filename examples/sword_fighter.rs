@@ -71,7 +71,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
         root.spawn((
             Text::new("[1] Start/Stop  [2] Toggle Swoosh  [3] Swap Layer Order"),
             TextFont {
-                font_size: 18.,
+                font_size: FontSize::Px(18.),
                 ..default()
             },
             TextColor(css::GRAY.into()),
@@ -83,7 +83,7 @@ fn setup(mut cmd: Commands, server: Res<AssetServer>) {
         root.spawn((
             Text::new("Playing | Swoosh: visible | Order: normal"),
             TextFont {
-                font_size: 16.,
+                font_size: FontSize::Px(16.),
                 ..default()
             },
             TextColor(css::WHITE.into()),
@@ -125,14 +125,14 @@ fn handle_input(
         state.swoosh_visible = !state.swoosh_visible;
         for (_, _, layers) in &fighters {
             for child in layers.iter() {
-                if let Ok((id, mut vis)) = layer_children.get_mut(child) {
-                    if *id == swoosh {
-                        *vis = if state.swoosh_visible {
-                            Visibility::Inherited
-                        } else {
-                            Visibility::Hidden
-                        };
-                    }
+                if let Ok((id, mut vis)) = layer_children.get_mut(child)
+                    && *id == swoosh
+                {
+                    *vis = if state.swoosh_visible {
+                        Visibility::Inherited
+                    } else {
+                        Visibility::Hidden
+                    };
                 }
             }
         }

@@ -37,20 +37,19 @@ pub mod prelude {
 /// The main plugin. Add this to your [`App`] to enable aseprite loading,
 /// animation, slices, and layered rendering.
 ///
-/// Compiled but not run: `DefaultPlugins` builds a winit event loop, which
-/// needs a display.
+/// A game adds it next to `DefaultPlugins`, ideally with a nearest-neighbour
+/// sampler (`ImagePlugin { default_sampler: ImageSamplerDescriptor::nearest() }`)
+/// for crisp pixel art. The example runs headless on `MinimalPlugins`.
 ///
-/// ```rust,no_run
+/// ```rust
 /// # use bevy::prelude::*;
 /// # use bevy_aseprite_ultra::prelude::*;
 /// fn main() {
-///     App::new()
-///         .add_plugins(DefaultPlugins.set(ImagePlugin {
-///             default_sampler: bevy::image::ImageSamplerDescriptor::nearest(),
-///         }))
+///     let mut app = App::new();
+///     app.add_plugins((MinimalPlugins, AssetPlugin::default()))
 ///         .add_plugins(AsepriteUltraPlugin)
 ///         .add_systems(Startup, setup);
-///         // .run();
+///     app.update();
 /// }
 ///
 /// fn setup(mut cmd: Commands, server: Res<AssetServer>) {
@@ -64,7 +63,7 @@ pub mod prelude {
 ///
 ///     // Static slice
 ///     cmd.spawn(
-///         AseTexture::baked(server.load("icons.aseprite"))
+///         AseTexture::baked(server.load("ghost_slices.aseprite"))
 ///             .with_slice("ghost_red")
 ///             .sprite(),
 ///     );

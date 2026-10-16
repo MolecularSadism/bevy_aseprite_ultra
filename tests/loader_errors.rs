@@ -118,12 +118,15 @@ fn a_file_that_outgrows_the_atlas_cap_fails_to_load() {
     app.init_asset::<TextureAtlasLayout>();
 
     let server = app.world().resource::<AssetServer>().clone();
-    let handle: Handle<Aseprite> = server.load_with_settings(file, |settings| {
-        *settings = AsepriteLoaderSettings {
-            max_atlas_size: 8,
-            ..default()
-        };
-    });
+    let handle: Handle<Aseprite> = server
+        .load_builder()
+        .with_settings(|settings: &mut AsepriteLoaderSettings| {
+            *settings = AsepriteLoaderSettings {
+                max_atlas_size: 8,
+                ..default()
+            };
+        })
+        .load(file);
 
     for _ in 0..1000 {
         app.update();
