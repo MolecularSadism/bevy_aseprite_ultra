@@ -9,12 +9,13 @@ use bevy::{
     asset::{AssetLoader, RenderAssetUsages, io::Reader},
     image::ImageSampler,
     log::warn_once,
-    platform::collections::HashMap,
+    platform::{collections::HashMap, hash::FixedHasher},
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
     sprite::{Anchor, BorderRect},
 };
 use serde::{Deserialize, Serialize};
+use std::hash::BuildHasher;
 use uuid::Uuid;
 
 /// Registers the [`Aseprite`] asset type and its loader.
@@ -538,9 +539,9 @@ pub struct AsepriteLoaderSettings {
     pub visible_layers: Option<Vec<String>>,
     /// Edge length, in pixels, of the square the packed atlas may not exceed.
     ///
-    /// One file packs its canvas once per frame per variant — composite, all,
-    /// and one per layer — so a large canvas with many frames and layers can
-    /// exhaust the default. Overflowing the cap fails the load with an
+    /// One file packs its canvas once for each distinct image its variants
+    /// render — composite, all, and one per layer, on every frame — so a large
+    /// canvas with many frames and changing layers can exhaust the default. Overflowing the cap fails the load with an
     /// `AsepriteError` rather than cropping silently; raise it here when a
     /// file legitimately needs more than the GPU-safe default of 4096.
     pub max_atlas_size: u32,
@@ -580,39 +581,25 @@ impl AssetLoader for AsepriteLoader {
         let num_frames = raw.frames().len();
 
         // Collect all rendered images with their IDs, then add to atlas in one pass.
-        let mut all_images: Vec<(AssetId<Image>, Image)> = Vec::new();
+        let mut all_images = FramePool::default();
+        let canvas = Extent3d {
+            width: width as u32,
+            height: height as u32,
+            depth_or_array_layers: 1,
+        };
 
         // Helper: render all frames with a given layer selection.
         // Returns the AssetIds for each frame rendered.
         let render_frames = |raw: &AsepriteFile,
                              selection: &LayerSelection,
                              sampler: &ImageSampler,
-                             images: &mut Vec<(AssetId<Image>, Image)>|
+                             images: &mut FramePool|
          -> Result<Vec<AssetId<Image>>, AsepriteError> {
             let mut frame_ids = Vec::with_capacity(num_frames);
             for index in 0..num_frames {
                 let mut buffer = vec![0u8; buf_size];
                 raw.render_frame(index, buffer.as_mut_slice(), selection)?;
-
-                let image = Image {
-                    sampler: sampler.clone(),
-                    ..Image::new(
-                        Extent3d {
-                            width: width as u32,
-                            height: height as u32,
-                            depth_or_array_layers: 1,
-                        },
-                        TextureDimension::D2,
-                        buffer,
-                        TextureFormat::Rgba8UnormSrgb,
-                        RenderAssetUsages::default(),
-                    )
-                };
-                let id = AssetId::Uuid {
-                    uuid: Uuid::new_v4(),
-                };
-                images.push((id, image));
-                frame_ids.push(id);
+                frame_ids.push(images.insert(buffer, canvas, sampler));
             }
             Ok(frame_ids)
         };
@@ -656,7 +643,7 @@ impl AssetLoader for AsepriteLoader {
         // ----------------------------- build shared atlas
         let mut atlas_builder = TextureAtlasBuilder::default();
         atlas_builder.max_size(UVec2::splat(settings.max_atlas_size));
-        for (id, image) in &all_images {
+        for (id, image) in &all_images.images {
             atlas_builder.add_texture(Some(*id), image);
         }
         let (mut layout, source, image) = atlas_builder.build()?;
@@ -672,7 +659,7 @@ impl AssetLoader for AsepriteLoader {
                         .get(id)
                         .copied()
                         .ok_or(AsepriteError::AtlasOverflow {
-                            textures: all_images.len(),
+                            textures: all_images.images.len(),
                             max_size: settings.max_atlas_size,
                         })
                 })
@@ -891,6 +878,55 @@ impl AssetLoader for AsepriteLoader {
 
 /// A slice as the file describes it, before any variant places it in the
 /// packed atlas.
+/// Every distinct frame image a file renders, across all its variants.
+///
+/// A layer that holds still, or a variant that draws the same pixels as
+/// another, renders the same image on many frames. Packing each copy would
+/// let a file with many layers outgrow the atlas, so an image identical to
+/// one already pooled reuses that one's id and atlas entry.
+#[derive(Default)]
+struct FramePool {
+    images: Vec<(AssetId<Image>, Image)>,
+    /// Indices into `images`, by a hash of their pixels.
+    by_pixels: HashMap<u64, Vec<usize>>,
+}
+
+impl FramePool {
+    /// The id of the pooled image holding exactly `pixels`, pooling a new one
+    /// when none does.
+    fn insert(
+        &mut self,
+        pixels: Vec<u8>,
+        size: Extent3d,
+        sampler: &ImageSampler,
+    ) -> AssetId<Image> {
+        let hash = FixedHasher.hash_one(&pixels);
+        let candidates = self.by_pixels.entry(hash).or_default();
+        if let Some(&index) = candidates
+            .iter()
+            .find(|&&index| self.images[index].1.data.as_deref() == Some(pixels.as_slice()))
+        {
+            return self.images[index].0;
+        }
+        candidates.push(self.images.len());
+        let id = AssetId::Uuid {
+            uuid: Uuid::new_v4(),
+        };
+        let image = Image {
+            sampler: sampler.clone(),
+            ..Image::new(
+                size,
+                TextureDimension::D2,
+                pixels,
+                TextureFormat::Rgba8UnormSrgb,
+                RenderAssetUsages::default(),
+            )
+        };
+        self.images.push((id, image));
+        id
+    }
+}
+
 struct RawSlice {
     name: String,
     rect: Rect,
