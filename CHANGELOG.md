@@ -1,3 +1,13 @@
+## 0.13.1
+
+- **Identical frames share one atlas entry.** The loader packed the whole
+  canvas once per frame for every variant — composite, all, and each layer —
+  so a file whose layers mostly hold still filled the atlas with copies and
+  could fail with `AtlasOverflow` long before it drew that much distinct art.
+  Each distinct image is now packed once and every frame drawing it, in any
+  variant, points at that entry. Frame sizes, slices and indices behave as
+  before; only repeated pixels stop costing atlas space.
+
 ## 0.13.0
 
 Breaking: targets Bevy 0.19.
