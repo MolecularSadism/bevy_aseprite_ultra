@@ -1,3 +1,9 @@
+## 0.14.0
+
+- **Reflection for scripting.** `AnimationEvent` and `AnimationFrameChanged`
+  register as messages and `NextFrame` as an event in the type registry, and
+  the layer offset tracker is reflectable. No behaviour change.
+
 ## 0.13.1
 
 - **Identical frames share one atlas entry.** The loader packed the whole

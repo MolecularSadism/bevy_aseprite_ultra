@@ -485,7 +485,7 @@ pub enum PlayDirection {
 ///
 /// Read with `MessageReader<AnimationEvent>`.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq, Reflect)]
-#[reflect(Debug, PartialEq)]
+#[reflect(Message, Debug, PartialEq)]
 pub enum AnimationEvent {
     Finished(Entity),
     LoopCycleFinished(Entity),
@@ -514,7 +514,7 @@ pub enum AnimationEvent {
 /// resumes with the next change. Consequently a `frame >= N` consumer fires
 /// one tick late when a tag entry lands exactly on `N`.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq, Reflect)]
-#[reflect(Debug, PartialEq)]
+#[reflect(Message, Debug, PartialEq)]
 pub struct AnimationFrameChanged {
     pub entity: Entity,
     pub frame: u16,
@@ -904,7 +904,7 @@ pub fn update_aseprite_animation(
 ///
 /// Used together with [`ManualTick`] for frame-by-frame control.
 #[derive(EntityEvent, Debug, Clone, Copy, PartialEq, Eq, Reflect)]
-#[reflect(Debug, PartialEq)]
+#[reflect(Event, Debug, PartialEq)]
 pub struct NextFrame {
     pub entity: Entity,
 }

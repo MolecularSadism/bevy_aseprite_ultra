@@ -32,7 +32,8 @@ impl Plugin for AsepriteLayersPlugin {
             .register_type::<SliceId>()
             .register_type::<TagId>()
             .register_type::<SpriteLayerOf>()
-            .register_type::<SpriteLayers>();
+            .register_type::<SpriteLayers>()
+            .register_type::<AppliedOffset>();
         // `LayerId` gets its reflect impls from the `InternedId` derive, which
         // knows nothing about it also being a component.
         app.register_type_data::<LayerId, bevy::ecs::reflect::ReflectComponent>();
@@ -353,7 +354,8 @@ pub struct AseFlip {
 }
 
 /// Tracks the last applied offset so changes can be applied relatively.
-#[derive(Component, Default, Clone, Debug)]
+#[derive(Component, Reflect, Default, Clone, Debug)]
+#[reflect(Component, Default)]
 struct AppliedOffset(Vec2);
 
 // ---- systems ----
