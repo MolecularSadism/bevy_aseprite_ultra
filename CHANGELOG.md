@@ -1,4 +1,4 @@
-## 0.14.0
+## 0.13.2
 
 - **Reflection for scripting.** `AnimationEvent` and `AnimationFrameChanged`
   register as messages and `NextFrame` as an event in the type registry, and
